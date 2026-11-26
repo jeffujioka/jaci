@@ -4,8 +4,7 @@
 
 mod common;
 
-use common::{Env, in_terminal_sized, stderr};
-use jaci::{art_file, config};
+use common::{Env, in_terminal_sized, read_art, stderr};
 
 /// Wide enough for the 80-column art, the padding and the full config's
 /// text panel.
@@ -24,9 +23,8 @@ fn banner_works_right_after_init() {
     assert!(banner.status.success(), "banner: {banner:?}");
     assert_eq!(banner.stderr, "");
 
-    let config =
-        config::load(&env.config_folder(), env.home()).unwrap_or_else(|error| panic!("{error}"));
-    let art = art_file::read(&config.banner.image).unwrap_or_else(|error| panic!("{error}"));
+    let config = env.config();
+    let art = read_art(&config.banner.image);
     let art_rows = art.rows();
     assert_eq!(art_rows.len(), 40);
     let lines: Vec<&str> = banner.stdout.lines().collect();

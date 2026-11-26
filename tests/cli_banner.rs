@@ -5,16 +5,16 @@
 mod common;
 
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::Duration;
 
-use common::{Env, TerminalRun, in_terminal, stderr};
-use jaci::art_file;
-use jaci::cache;
+use common::{
+    Env, HELP_LINE, TerminalRun, assert_quiet_success, config_with, in_terminal, read_art,
+    read_cache, stderr,
+};
 use jaci::sysinfo::StaticVariable::Hostname;
 use tempfile::TempDir;
 
-const HELP_LINE: &str = "Run 'jaci --help' or 'jaci init --help' for more details.";
 const HALFBLOCK: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/test_fixtures/4x4-halfblock.ansi"
@@ -26,14 +26,10 @@ const TESTHOST_CACHE: &str = "hostname = \"testhost\"\n";
 const FAST: Duration = Duration::from_millis(100);
 
 impl Env {
-    fn cache_path(&self) -> PathBuf {
-        self.config_folder().join(cache::FILE_NAME)
-    }
-
     /// Copies the halfblock fixture to the default art file.
     fn add_art(&self) {
         fs::create_dir_all(self.config_folder()).unwrap();
-        fs::copy(HALFBLOCK, self.config_folder().join("art.ansi")).unwrap();
+        fs::copy(HALFBLOCK, self.art_path()).unwrap();
     }
 
     fn add_cache(&self, toml: &str) {
@@ -56,23 +52,11 @@ fn set_up(toml: &str) -> Env {
     env
 }
 
-/// The config whose only text block is `content`.
-fn config_with(content: &str) -> String {
-    format!("[[banner.text.blocks]]\ncontent = '{content}'\n")
-}
-
-/// The rows of the art file at `path`.
-fn art_rows(path: &Path) -> Vec<String> {
-    art_file::read(path)
-        .unwrap_or_else(|error| panic!("{error}"))
-        .rows()
-        .to_vec()
-}
-
 /// The terminal output of the art at `path` with the default padding and
 /// `text` beside its first row.
 fn beside(path: &Path, text: &str) -> String {
-    let rows = art_rows(path);
+    let art = read_art(path);
+    let rows = art.rows();
     let mut expected = format!("{}    {text}\n", rows[0]);
     for row in &rows[1..] {
         expected.push_str(row);
@@ -101,7 +85,8 @@ fn banner_shows_art_beside_text() {
 
     let run = env.banner(&["banner"]);
 
-    let rows = art_rows(Path::new(HALFBLOCK));
+    let art = read_art(Path::new(HALFBLOCK));
+    let rows = art.rows();
     assert_eq!(rows.len(), 2);
     assert_shown(&run, &format!("{}    testhost\n{}\n", rows[0], rows[1]));
 }
@@ -110,7 +95,7 @@ fn banner_shows_art_beside_text() {
 fn art_argument_overrides_config() {
     let toml = format!(
         "[banner]\nimage = '{HALFBLOCK}'\n\n{}",
-        config_with("{hostname}")
+        config_with(&["{hostname}"])
     );
     let env = Env::with_config(&toml);
     env.add_cache(TESTHOST_CACHE);
@@ -130,9 +115,7 @@ fn refresh_cache_writes_cache_first() {
 
     let run = env.banner(&["banner", "--refresh-cache"]);
 
-    let cache = cache::read(&env.cache_path())
-        .unwrap_or_else(|error| panic!("{error}"))
-        .expect("the cache file is missing");
+    let cache = read_cache(&env.cache_path());
     let hostname = cache.get(Hostname).expect("the cache has no hostname");
     assert!(!hostname.is_empty());
     assert_shown(&run, &beside(Path::new(HALFBLOCK), hostname));
@@ -140,7 +123,7 @@ fn refresh_cache_writes_cache_first() {
 
 #[test]
 fn banner_starts_fast() {
-    let env = set_up(&config_with("{ram} {disk} {uptime}"));
+    let env = set_up(&config_with(&["{ram} {disk} {uptime}"]));
     // The first start of a freshly built binary from a process pays for
     // macOS's one-time assessment of it, about 150 ms that is not jaci's.
     let warm_up = env.jaci(&["--version"]);
@@ -193,7 +176,7 @@ fn cache_missing() {
 
 #[test]
 fn used_static_variable_missing_from_cache() {
-    let env = set_up(&config_with("{os}"));
+    let env = set_up(&config_with(&["{os}"]));
 
     let run = env.banner(&["banner"]);
 
@@ -206,15 +189,13 @@ fn piped_banner_prints_nothing() {
 
     let output = env.jaci(&["banner", "--refresh-cache"]);
 
-    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
-    assert!(output.stdout.is_empty(), "{:?}", output.stdout);
-    assert!(output.stderr.is_empty(), "{}", stderr(&output));
+    assert_quiet_success(&output);
     assert!(!env.cache_path().exists());
 }
 
 #[test]
 fn dynamic_variables_need_no_external_program() {
-    let env = set_up(&config_with("{ram}|{disk}|{uptime}"));
+    let env = set_up(&config_with(&["{ram}|{disk}|{uptime}"]));
     let mut command = env.command(&["banner"]);
     command.env("PATH", "");
 
@@ -222,7 +203,8 @@ fn dynamic_variables_need_no_external_program() {
 
     assert_eq!(run.status.code(), Some(0), "{}", run.stderr);
     let first_row = run.stdout.lines().next().expect("the banner shows no rows");
-    let art_row = &art_rows(Path::new(HALFBLOCK))[0];
+    let art = read_art(Path::new(HALFBLOCK));
+    let art_row = &art.rows()[0];
     let panel = first_row
         .strip_prefix(&format!("{art_row}    "))
         .unwrap_or_else(|| panic!("row 1 is not the art and the panel: {first_row:?}"));

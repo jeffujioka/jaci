@@ -4,15 +4,11 @@
 mod common;
 
 use std::fs;
-use std::path::PathBuf;
 
-use common::{Env, HELP_LINE, stderr, stdout};
-use jaci::art_file::{self, Art};
-use jaci::cache::{self, Cache};
-use jaci::config::{self, Banner, Block, BlockText, Config, Encode, Style, Text};
+use common::{Env, HELP_LINE, content_block, read_art, read_cache, stderr, stdout};
+use jaci::config::{Banner, Block, Config, Encode, Text};
 use jaci::render::Mode;
 use jaci::sysinfo::StaticVariable::{Cpu, Gpu, Hostname, Os};
-use jaci::template;
 
 const IMAGE: &str = "test_fixtures/4x4.png";
 /// The full config's text blocks, one per built-in variable (D38).
@@ -32,47 +28,14 @@ const COMMENTED_KEYS: [&str; 10] = [
 const NO_IMAGE: &str = "Which image should jaci use? Run 'jaci init <image>' to get started.";
 
 impl Env {
-    fn art_path(&self) -> PathBuf {
-        self.config_folder().join("art.ansi")
-    }
-
-    fn cache_path(&self) -> PathBuf {
-        self.config_folder().join(cache::FILE_NAME)
-    }
-
     fn config_text(&self) -> String {
         fs::read_to_string(self.config_path()).unwrap()
-    }
-
-    /// Loads the written config, failing the test when it does not load.
-    fn config(&self) -> Config {
-        config::load(&self.config_folder(), self.home()).unwrap_or_else(|error| panic!("{error}"))
-    }
-
-    /// Reads the written cache, failing the test when it is missing or
-    /// damaged.
-    fn cache(&self) -> Cache {
-        cache::read(&self.cache_path())
-            .unwrap_or_else(|error| panic!("{error}"))
-            .expect("the cache file is missing")
-    }
-
-    /// Reads the written art file, failing the test when it is not one.
-    fn art(&self) -> Art {
-        art_file::read(&self.art_path()).unwrap_or_else(|error| panic!("{error}"))
     }
 }
 
 /// Text blocks of `contents`, each in the default style and colour.
 fn blocks(contents: &[&str]) -> Vec<Block> {
-    contents
-        .iter()
-        .map(|content| Block {
-            text: BlockText::Content(template::parse(content).unwrap()),
-            style: Style::Normal,
-            color: None,
-        })
-        .collect()
+    contents.iter().copied().map(content_block).collect()
 }
 
 /// Whether a line of `text` sets `key` right below a comment line.
@@ -130,8 +93,8 @@ fn init_sets_everything_up() {
     assert!(output.stdout.is_empty());
     assert!(output.stderr.is_empty());
     assert_full_config(&env, Mode::Halfblock, 80, &FULL_BLOCKS);
-    assert_eq!(env.art().columns(), 80);
-    let cache = env.cache();
+    assert_eq!(read_art(&env.art_path()).columns(), 80);
+    let cache = read_cache(&env.cache_path());
     for variable in [Hostname, Os, Cpu, Gpu] {
         assert!(cache.get(variable).is_some(), "{variable:?} is not cached");
     }
@@ -165,8 +128,8 @@ fn minimal_init_writes_lean_config() {
         },
     };
     assert_eq!(env.config(), expected);
-    assert_eq!(env.art().columns(), 80);
-    let cache = env.cache();
+    assert_eq!(read_art(&env.art_path()).columns(), 80);
+    let cache = read_cache(&env.cache_path());
     assert!(cache.get(Hostname).is_some());
     for variable in [Os, Cpu, Gpu] {
         assert_eq!(cache.get(variable), None, "{variable:?} is cached");
@@ -238,7 +201,18 @@ fn interactive_init_asks_for_image() {
         )
     );
     assert_full_config(&env, Mode::Halfblock, 80, &FULL_BLOCKS);
-    assert_eq!(env.art().columns(), 80);
+    assert_eq!(read_art(&env.art_path()).columns(), 80);
+}
+
+#[test]
+fn image_answer_expands_home() {
+    let env = Env::new();
+    fs::copy(IMAGE, env.home().join("logo.png")).unwrap();
+
+    let output = env.jaci_with_input(&["init", "-i"], &format!("~/logo.png\n{}", "\n".repeat(9)));
+
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert_eq!(read_art(&env.art_path()).columns(), 80);
 }
 
 #[test]
@@ -263,7 +237,7 @@ fn given_image_skips_image_prompt() {
     let mut contents = FULL_BLOCKS.to_vec();
     contents.remove(1);
     assert_full_config(&env, Mode::Braille, 40, &contents);
-    assert_eq!(env.art().columns(), 40);
+    assert_eq!(read_art(&env.art_path()).columns(), 40);
 }
 
 #[test]

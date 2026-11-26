@@ -1,7 +1,11 @@
-use std::fs;
-use std::path::{Path, PathBuf};
+mod common;
 
+use std::fs;
+use std::path::PathBuf;
+
+use common::read_cache;
 use jaci::cache::{self, Cache};
+use jaci::named::Named;
 use jaci::sysinfo::StaticVariable::{self, Cpu, Gpu, Hostname, Os};
 use tempfile::TempDir;
 
@@ -19,21 +23,13 @@ fn cache_of(values: &[(StaticVariable, &str)]) -> Cache {
         .collect()
 }
 
-/// Reads the cache file at `path`, failing the test when it is missing or
-/// damaged.
-fn read(path: &Path) -> Cache {
-    cache::read(path)
-        .unwrap_or_else(|error| panic!("{error}"))
-        .expect("the cache file is missing")
-}
-
 #[test]
 fn saved_values_read_back() {
     let (_folder, path) = cache_file();
     let values = [(Hostname, "h1"), (Os, "o1"), (Cpu, "c1"), (Gpu, "g1")];
 
     cache::write(&path, &cache_of(&values)).unwrap();
-    let cache = read(&path);
+    let cache = read_cache(&path);
 
     for (variable, value) in values {
         assert_eq!(cache.get(variable), Some(value), "{}", variable.name());
@@ -47,7 +43,7 @@ fn quoted_values_read_back() {
 
     cache::write(&path, &cache_of(&[(Cpu, value)])).unwrap();
 
-    assert_eq!(read(&path).get(Cpu), Some(value));
+    assert_eq!(read_cache(&path).get(Cpu), Some(value));
 }
 
 #[test]
@@ -55,7 +51,7 @@ fn partial_cache_reads() {
     let (_folder, path) = cache_file();
     fs::write(&path, "hostname = \"h1\"\n").unwrap();
 
-    let cache = read(&path);
+    let cache = read_cache(&path);
 
     assert_eq!(cache.get(Hostname), Some("h1"));
     for variable in [Os, Cpu, Gpu] {

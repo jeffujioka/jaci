@@ -6,13 +6,11 @@
 //! transparent. A cell with no opaque pixel is a space with no escape; every
 //! other cell ends in a reset.
 
-use std::fmt::Write as _;
-
 use image::RgbaImage;
 
-const RESET: &str = "\x1b[0m";
-const FOREGROUND: u8 = 38;
-const BACKGROUND: u8 = 48;
+use crate::ansi::{self, RESET};
+use crate::named::Named;
+
 pub(crate) const DEFAULT_CHARSET: &str = " .:-=+*#%@";
 const BRAILLE_BLANK: u32 = 0x2800;
 /// Each braille dot as its pixel's offset in the 2×4 cell and its bit:
@@ -42,19 +40,20 @@ pub enum Mode {
     Braille,
 }
 
-impl Mode {
-    /// Every mode, in the order the help and the messages list them.
-    pub const ALL: [Self; 3] = [Self::Halfblock, Self::Ascii, Self::Braille];
+impl Named for Mode {
+    /// In the order the help and the messages list them.
+    const ALL: &'static [Self] = &[Self::Halfblock, Self::Ascii, Self::Braille];
 
-    /// The name the option and the config give the mode.
-    pub const fn name(self) -> &'static str {
+    fn name(self) -> &'static str {
         match self {
             Self::Halfblock => "halfblock",
             Self::Ascii => "ascii",
             Self::Braille => "braille",
         }
     }
+}
 
+impl Mode {
     /// The width and height in pixels of one character cell.
     pub const fn cell_size(self) -> (u32, u32) {
         match self {
@@ -101,8 +100,8 @@ pub fn halfblock(image: &RgbaImage) -> Vec<String> {
     render_cells(image, Mode::Halfblock.cell_size(), |row, x, y| {
         match (opaque(image, x, y), opaque(image, x, y + 1)) {
             (Some(top), Some(bottom)) => {
-                push_colour(row, FOREGROUND, top);
-                push_colour(row, BACKGROUND, bottom);
+                ansi::push_foreground(row, top);
+                ansi::push_background(row, bottom);
                 row.push('▀');
                 row.push_str(RESET);
             }
@@ -180,15 +179,9 @@ fn opaque(image: &RgbaImage, x: u32, y: u32) -> Option<Rgb> {
 
 /// Appends `glyph` in the foreground `colour`, then a reset.
 fn push_cell(row: &mut String, colour: Rgb, glyph: char) {
-    push_colour(row, FOREGROUND, colour);
+    ansi::push_foreground(row, colour);
     row.push(glyph);
     row.push_str(RESET);
-}
-
-/// Appends the escape that sets `colour` on `layer`, 38 for the foreground
-/// or 48 for the background.
-fn push_colour(row: &mut String, layer: u8, [r, g, b]: Rgb) {
-    write!(row, "\x1b[{layer};2;{r};{g};{b}m").expect("writing to a String cannot fail");
 }
 
 #[cfg(test)]
@@ -197,8 +190,6 @@ mod tests {
 
     #[test]
     fn every_mode_has_its_name() {
-        let names = Mode::ALL.map(Mode::name);
-
-        assert_eq!(names, ["halfblock", "ascii", "braille"]);
+        assert_eq!(Mode::names(), "halfblock, ascii, braille");
     }
 }

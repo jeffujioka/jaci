@@ -13,7 +13,10 @@ use image::{ImageError, ImageReader, RgbaImage};
 pub enum ImageInputError {
     /// No file exists at the path.
     NotFound { path: PathBuf, source: io::Error },
-    /// The file could not be read or decoded as a supported image.
+    /// The file exists but cannot be read, such as a folder or a file
+    /// without read permission.
+    Read { path: PathBuf, source: io::Error },
+    /// The file could not be decoded as a supported image.
     Decode { path: PathBuf, source: ImageError },
 }
 
@@ -22,6 +25,9 @@ impl fmt::Display for ImageInputError {
         match self {
             Self::NotFound { path, .. } => {
                 write!(f, "jaci: image not found: {}", path.display())
+            }
+            Self::Read { path, source } => {
+                write!(f, "jaci: cannot read image {}: {source}", path.display())
             }
             Self::Decode { path, .. } => write!(
                 f,
@@ -35,7 +41,7 @@ impl fmt::Display for ImageInputError {
 impl Error for ImageInputError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
-            Self::NotFound { source, .. } => Some(source),
+            Self::NotFound { source, .. } | Self::Read { source, .. } => Some(source),
             Self::Decode { source, .. } => Some(source),
         }
     }
@@ -46,26 +52,30 @@ impl Error for ImageInputError {
 ///
 /// # Errors
 ///
-/// [`ImageInputError::NotFound`] when no file exists at `path`, and
-/// [`ImageInputError::Decode`] for any other read or decode failure.
+/// [`ImageInputError::NotFound`] when no file exists at `path`,
+/// [`ImageInputError::Read`] when the file cannot be opened or its start
+/// read, and [`ImageInputError::Decode`] for any decode failure.
 pub fn read(path: impl AsRef<Path>) -> Result<RgbaImage, ImageInputError> {
     let path = path.as_ref();
-    let decode_error = |source| ImageInputError::Decode {
-        path: path.to_path_buf(),
-        source,
-    };
-    let reader = ImageReader::open(path).map_err(|source| match source.kind() {
+    let read_error = |source: io::Error| match source.kind() {
         io::ErrorKind::NotFound => ImageInputError::NotFound {
             path: path.to_path_buf(),
             source,
         },
-        _ => decode_error(ImageError::IoError(source)),
-    })?;
-    let image = reader
+        _ => ImageInputError::Read {
+            path: path.to_path_buf(),
+            source,
+        },
+    };
+    let image = ImageReader::open(path)
+        .map_err(read_error)?
         .with_guessed_format()
-        .map_err(|source| decode_error(ImageError::IoError(source)))?
+        .map_err(read_error)?
         .decode()
-        .map_err(decode_error)?;
+        .map_err(|source| ImageInputError::Decode {
+            path: path.to_path_buf(),
+            source,
+        })?;
     // Moves the buffer when the decode is already RGBA8; converts otherwise.
     Ok(image.into_rgba8())
 }

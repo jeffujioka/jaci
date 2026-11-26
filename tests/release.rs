@@ -83,14 +83,43 @@ fn tagged_release_builds_three_targets() {
     targets.sort_unstable();
     assert_eq!(targets, RELEASE_TARGETS);
 
-    // Drafted first, so no build failure leaves a public, partial release.
+    // The token reaches only the steps that run gh, not the build's
+    // dependencies or the third-party actions.
+    assert!(workflow["env"].is_badvalue(), "no workflow-wide env");
+    for (name, job) in jobs {
+        assert!(job["env"].is_badvalue(), "{name:?}: no job-wide env");
+        for step in job["steps"].as_vec().expect("steps") {
+            let env = &step["env"];
+            let runs_gh = step["run"]
+                .as_str()
+                .is_some_and(|run| run.split_whitespace().any(|word| word == "gh"));
+            if runs_gh {
+                assert_eq!(
+                    env["GH_TOKEN"].as_str(),
+                    Some("${{ github.token }}"),
+                    "{step:?}"
+                );
+                assert_eq!(
+                    env["GH_REPO"].as_str(),
+                    Some("${{ github.repository }}"),
+                    "{step:?}"
+                );
+            } else {
+                assert!(env["GH_TOKEN"].is_badvalue(), "{step:?}: no token");
+            }
+        }
+    }
+
+    // Drafted first, so no build failure leaves a public, partial release;
+    // a re-run keeps the draft it made before.
     let create = &workflow["jobs"][build["needs"].as_str().expect("the build needs a job")];
     assert!(
         commands(create, &Yaml::Null).iter().any(|run| {
-            run.starts_with(&format!("gh release create {TAG} "))
-                && run.split_whitespace().any(|word| word == "--draft")
+            run.starts_with(&format!(
+                "gh release view {TAG} || gh release create {TAG} "
+            )) && run.split_whitespace().any(|word| word == "--draft")
         }),
-        "the builds upload to a draft release"
+        "the builds upload to a draft release, created once"
     );
     assert!(
         jobs.values()
@@ -102,6 +131,7 @@ fn tagged_release_builds_three_targets() {
 
     for entry in matrix {
         let target = entry["target"].as_str().unwrap();
+        let configs = steps(build, entry);
         let steps = commands(build, entry);
         let step = |wanted: &dyn Fn(&str) -> bool, what: &str| {
             steps
@@ -113,9 +143,17 @@ fn tagged_release_builds_three_targets() {
         let built = if target == LINUX_TARGET {
             // glibc 2.17, the oldest Rust supports, not the runner's own.
             let zig = step(&|step| step.starts_with("mlugg/setup-zig@"), "zig");
+            let zig_version = configs[zig]["with"]["version"].as_str().unwrap_or_default();
+            assert!(
+                exact_version(zig_version),
+                "zig pinned, not {zig_version:?}"
+            );
             let zigbuild = step(
-                &|step| step == "cargo install --locked cargo-zigbuild",
-                "cargo-zigbuild",
+                &|step| {
+                    step.strip_prefix("cargo install --locked cargo-zigbuild --version ")
+                        .is_some_and(exact_version)
+                },
+                "cargo-zigbuild at a pinned version",
             );
             let built = step(
                 &|step| step == format!("cargo zigbuild --release --locked --target {target}.2.17"),
@@ -127,7 +165,20 @@ fn tagged_release_builds_three_targets() {
                 },
                 "a check of the binary's glibc symbol versions",
             );
-            assert!(zig < built && zigbuild < built && built < checked);
+            // bash runs with pipefail, so a failed objdump fails the step.
+            assert_eq!(
+                configs[checked]["shell"].as_str(),
+                Some("bash"),
+                "the check's shell"
+            );
+            assert!(
+                steps[checked].contains("test -n \"$versions\""),
+                "the check fails when objdump finds no glibc version"
+            );
+            assert!(
+                zig < built && zigbuild < built && built < checked,
+                "{target}: zig and cargo-zigbuild, then the build, then the check"
+            );
             checked
         } else {
             step(
@@ -160,10 +211,9 @@ fn tagged_release_builds_three_targets() {
     }
 }
 
-/// What the steps of `job` run for the matrix `entry`, in order: each
-/// step's `uses` or `run`, with `entry`'s values for its `${{ matrix.* }}`,
-/// leaving out the steps whose `if` the entry fails.
-fn commands(job: &Yaml, entry: &Yaml) -> Vec<String> {
+/// The steps of `job` the matrix `entry` runs, in order, leaving out those
+/// whose `if` the entry fails.
+fn steps<'a>(job: &'a Yaml, entry: &Yaml) -> Vec<&'a Yaml> {
     job["steps"]
         .as_vec()
         .expect("steps")
@@ -175,6 +225,14 @@ fn commands(job: &Yaml, entry: &Yaml) -> Vec<String> {
                 None => matrix_flag(entry, condition),
             },
         })
+        .collect()
+}
+
+/// What the [`steps`] of `job` run for the matrix `entry`, in order: each
+/// step's `uses` or `run`, with `entry`'s values for its `${{ matrix.* }}`.
+fn commands(job: &Yaml, entry: &Yaml) -> Vec<String> {
+    steps(job, entry)
+        .into_iter()
         .map(|step| {
             let command = step["uses"].as_str().or(step["run"].as_str()).unwrap();
             entry.as_hash().into_iter().flatten().fold(
@@ -202,6 +260,15 @@ fn matrix_flag(entry: &Yaml, condition: &str) -> bool {
     entry[key]
         .as_bool()
         .unwrap_or_else(|| panic!("a boolean matrix.{key}"))
+}
+
+/// Whether `version` is an exact `<major>.<minor>.<patch>` version.
+fn exact_version(version: &str) -> bool {
+    let parts: Vec<&str> = version.split('.').collect();
+    parts.len() == 3
+        && parts
+            .iter()
+            .all(|part| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit()))
 }
 
 /// The keys of the mapping `yaml`, in order.

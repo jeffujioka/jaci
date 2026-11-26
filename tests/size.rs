@@ -9,7 +9,7 @@ fn image(width: u32, height: u32) -> RgbaImage {
 
 /// The columns and rows of `image` fitted in `mode` with `sizing`.
 fn cells(image: &RgbaImage, mode: Mode, sizing: &Sizing) -> (u32, u32) {
-    let fit = size::fit(image, mode, sizing);
+    let fit = size::fit(image, mode, sizing).unwrap();
     (fit.columns, fit.rows)
 }
 
@@ -93,7 +93,7 @@ fn config_width_applies() {
 fn square_image_in_halfblock() {
     let image = image(100, 100);
 
-    let fit = size::fit(&image, Mode::Halfblock, &Sizing::default());
+    let fit = size::fit(&image, Mode::Halfblock, &Sizing::default()).unwrap();
 
     assert_eq!(fit.rows, 40);
     assert_eq!(fit.image.dimensions(), (80, 80));
@@ -103,8 +103,8 @@ fn square_image_in_halfblock() {
 fn pixel_grid_follows_mode() {
     let image = image(100, 100);
 
-    let braille = size::fit(&image, Mode::Braille, &Sizing::default());
-    let ascii = size::fit(&image, Mode::Ascii, &Sizing::default());
+    let braille = size::fit(&image, Mode::Braille, &Sizing::default()).unwrap();
+    let ascii = size::fit(&image, Mode::Ascii, &Sizing::default()).unwrap();
 
     assert_eq!((braille.columns, braille.rows), (80, 40));
     assert_eq!(braille.image.dimensions(), (160, 160));
@@ -140,10 +140,39 @@ fn transparent_colour_does_not_bleed() {
         ..Sizing::default()
     };
 
-    let fit = size::fit(&image, Mode::Halfblock, &sizing);
+    let fit = size::fit(&image, Mode::Halfblock, &sizing).unwrap();
 
     assert_eq!(fit.image.dimensions(), (4, 4));
     for pixel in fit.image.pixels().filter(|pixel| pixel[3] != 0) {
         assert!(pixel[0] <= 2, "red bled into {pixel:?}");
     }
+}
+
+#[test]
+fn resampling_rings_no_alpha_around_a_shape() {
+    // An opaque 32×32 square in the middle of a transparent 64×64 image.
+    let image = RgbaImage::from_fn(64, 64, |x, y| {
+        if (16..48).contains(&x) && (16..48).contains(&y) {
+            Rgba([0, 0, 255, 255])
+        } else {
+            Rgba([0, 0, 0, 0])
+        }
+    });
+    let sizing = Sizing {
+        width: Some(16),
+        ..Sizing::default()
+    };
+
+    let fit = size::fit(&image, Mode::Halfblock, &sizing).unwrap();
+
+    // At a quarter of the size the square covers 4..12; one pixel beyond it
+    // may blend with the edge, anything further must stay transparent.
+    assert_eq!(fit.image.dimensions(), (16, 16));
+    let near = |coordinate| (3..13).contains(&coordinate);
+    let rings: Vec<_> = fit
+        .image
+        .enumerate_pixels()
+        .filter(|&(x, y, pixel)| !(near(x) && near(y)) && pixel[3] != 0)
+        .collect();
+    assert!(rings.is_empty(), "{} pixels: {rings:?}", rings.len());
 }

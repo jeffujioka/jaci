@@ -1,3 +1,4 @@
+use jaci::named::Named;
 use jaci::sysinfo::{self, DynamicVariable, StaticVariable};
 
 #[test]

@@ -4,41 +4,10 @@
 mod common;
 
 use std::fs;
-use std::path::PathBuf;
 
-use common::{Env, stderr};
-use jaci::cache::{self, Cache};
+use common::{Env, HELP_LINE, assert_quiet_success, config_with, read_cache, stderr};
+use jaci::named::Named;
 use jaci::sysinfo::StaticVariable::{Cpu, Gpu, Hostname, Os};
-
-const HELP_LINE: &str = "Run 'jaci --help' or 'jaci init --help' for more details.";
-
-impl Env {
-    fn cache_path(&self) -> PathBuf {
-        self.config_folder().join("cache")
-    }
-
-    /// Reads the cache file, failing the test when it is missing or damaged.
-    fn cache(&self) -> Cache {
-        cache::read(&self.cache_path())
-            .unwrap_or_else(|error| panic!("{error}"))
-            .expect("the cache file is missing")
-    }
-}
-
-/// A config whose text blocks are the `content` of each of `contents`.
-fn config_with(contents: &[&str]) -> String {
-    contents
-        .iter()
-        .map(|content| format!("[[banner.text.blocks]]\ncontent = '{content}'\n"))
-        .collect()
-}
-
-/// Asserts that `jaci cache` exited 0 with no output.
-fn assert_quiet_success(output: &std::process::Output) {
-    assert_eq!(output.status.code(), Some(0), "{}", stderr(output));
-    assert!(output.stdout.is_empty(), "{:?}", output.stdout);
-    assert!(output.stderr.is_empty(), "{}", stderr(output));
-}
 
 #[test]
 fn cache_holds_only_used_variables() {
@@ -47,7 +16,7 @@ fn cache_holds_only_used_variables() {
     let output = env.jaci(&["cache"]);
 
     assert_quiet_success(&output);
-    let cache = env.cache();
+    let cache = read_cache(&env.cache_path());
     assert!(cache.get(Hostname).is_some_and(|value| !value.is_empty()));
     for variable in [Os, Cpu, Gpu] {
         assert_eq!(cache.get(variable), None, "{}", variable.name());
@@ -62,7 +31,7 @@ fn cache_replaces_old_cache() {
     let output = env.jaci(&["cache"]);
 
     assert_quiet_success(&output);
-    let cache = env.cache();
+    let cache = read_cache(&env.cache_path());
     assert!(cache.get(Hostname).is_some());
     assert_eq!(cache.get(Os), None);
 }
@@ -78,7 +47,7 @@ fn variables_in_commands_are_not_used() {
     let output = env.jaci(&["cache"]);
 
     assert_quiet_success(&output);
-    let cache = env.cache();
+    let cache = read_cache(&env.cache_path());
     assert!(cache.get(Cpu).is_some());
     for variable in [Hostname, Os, Gpu] {
         assert_eq!(cache.get(variable), None, "{}", variable.name());
