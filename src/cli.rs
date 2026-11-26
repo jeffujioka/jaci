@@ -14,12 +14,15 @@ use std::time::Duration;
 
 use clap::builder::PossibleValue;
 use clap::{Args, Parser, Subcommand, ValueEnum};
+use image::RgbaImage;
 
 use crate::art_file::{self, ArtFileError};
+use crate::atomic_file;
 use crate::cache::{self, CacheError};
 use crate::compose;
-use crate::config::{self, Config, ConfigError};
+use crate::config::{self, Config, ConfigError, Encode};
 use crate::image_input::{self, ImageInputError};
+use crate::init::{self, InitError, Settings};
 use crate::render::{self, Charset, Mode};
 use crate::size::{self, Sizing};
 use crate::text;
@@ -48,6 +51,24 @@ enum Command {
     /// Show the art file with the text panel beside it, when stdout is a
     /// terminal.
     Banner(BannerArgs),
+    /// Set jaci up: write the config, encode the image into the art file and
+    /// write the system info cache.
+    Init(InitArgs),
+}
+
+/// `jaci init`'s arguments.
+#[derive(Debug, Args)]
+struct InitArgs {
+    /// The image: PNG, JPEG, WebP, BMP, GIF (its first frame) or TIFF.
+    image: Option<PathBuf>,
+    /// Write only [banner].image and one {hostname} block instead of the
+    /// full, commented config.
+    #[arg(long, conflicts_with = "interactive")]
+    minimal: bool,
+    /// Ask for the image when not given, the render mode, the width and
+    /// which variables to show.
+    #[arg(short, long)]
+    interactive: bool,
 }
 
 /// `jaci banner`'s arguments.
@@ -143,6 +164,7 @@ enum CliError {
     Cache(CacheError),
     Art(ArtFileError),
     Print(io::Error),
+    Init(InitError),
     /// Neither the art file nor the cache exists.
     FirstTime,
     /// The art file does not exist.
@@ -168,6 +190,7 @@ impl fmt::Display for CliError {
             Self::Cache(error) => error.fmt(f),
             Self::Art(error) => error.fmt(f),
             Self::Print(source) => write!(f, "jaci: cannot print the banner: {source}"),
+            Self::Init(error) => error.fmt(f),
             Self::FirstTime => f.write_str(
                 "First time? Welcome! jaci needs a quick setup — run 'jaci init' and you're good to go.",
             ),
@@ -188,6 +211,7 @@ impl Error for CliError {
             Self::Write { source, .. } | Self::Print(source) => Some(source),
             Self::Cache(error) => error.source(),
             Self::Art(error) => error.source(),
+            Self::Init(error) => error.source(),
         }
     }
 }
@@ -195,6 +219,12 @@ impl Error for CliError {
 impl From<ConfigError> for CliError {
     fn from(error: ConfigError) -> Self {
         Self::Config(error)
+    }
+}
+
+impl From<InitError> for CliError {
+    fn from(error: InitError) -> Self {
+        Self::Init(error)
     }
 }
 
@@ -244,7 +274,57 @@ fn run(cli: Cli) -> Result<(), CliError> {
             &folder.join(cache::FILE_NAME),
         )?),
         Command::Banner(args) => banner(&args, &config::load(&folder, &home)?, &folder),
+        Command::Init(args) => init(args, &folder, &home),
     }
+}
+
+/// Sets jaci up: asks what it has to on stdout and stdin, reads the image,
+/// then writes the config, the art file encoded as `jaci encode` encodes
+/// with the written config, and the cache.
+fn init(args: InitArgs, folder: &Path, home: &Path) -> Result<(), CliError> {
+    if args.image.is_none() && !args.interactive {
+        return Err(InitError::NoImage.into());
+    }
+    let config_path = folder.join(config::FILE_NAME);
+    let (image_path, settings) = {
+        let mut input = io::stdin().lock();
+        let mut output = io::stdout().lock();
+        if config_path.exists() {
+            init::confirm_overwrite(&mut input, &mut output, &config_path)?;
+        }
+        // Without an image, the check above leaves only interactive init.
+        let image_path = match args.image {
+            Some(image) => image,
+            None => init::ask_image(&mut input, &mut output)?,
+        };
+        let settings = if args.interactive {
+            init::ask_settings(&mut input, &mut output)?
+        } else {
+            Settings::default()
+        };
+        (image_path, settings)
+    };
+    // Before any file is written, so an unreadable image writes none (D38).
+    let image = image_input::read(&image_path)?;
+    let art = init::image_value(&folder.join(config::DEFAULT_IMAGE), home)?;
+    let text = if args.minimal {
+        init::minimal(&art)
+    } else {
+        init::full(&art, &settings)
+    };
+    atomic_file::write(&config_path, text.as_bytes()).map_err(|source| InitError::Write {
+        path: config_path,
+        source,
+    })?;
+    let config = config::load(folder, home)?;
+    encode_image(
+        &image,
+        config.encode.mode,
+        &config_sizing(&config.encode),
+        &config.encode.charset,
+        &config.banner.image,
+    )?;
+    Ok(cache::refresh(&config, &folder.join(cache::FILE_NAME))?)
 }
 
 /// Prints the art beside the text panel, sized for the terminal, after
@@ -302,26 +382,47 @@ fn encode(args: &EncodeArgs, config: &Config) -> Result<(), CliError> {
         None
     };
     let image = image_input::read(&args.image)?;
-    let mode = args.mode.unwrap_or(config.encode.mode);
     let sizing = Sizing {
         full: args.full,
         auto,
         width: args.width,
         scale: args.scale,
-        config_width: Some(config.encode.width),
         ratio: args.ratio,
-        config_ratio: Some(config.encode.ratio),
+        ..config_sizing(&config.encode)
     };
-    let fit = size::fit(&image, mode, &sizing);
+    encode_image(
+        &image,
+        args.mode.unwrap_or(config.encode.mode),
+        &sizing,
+        args.charset.as_ref().unwrap_or(&config.encode.charset),
+        args.output.as_deref().unwrap_or(&config.banner.image),
+    )
+}
+
+/// The sizing the `[encode]` keys give, with no options.
+fn config_sizing(encode: &Encode) -> Sizing {
+    Sizing {
+        config_width: Some(encode.width),
+        config_ratio: Some(encode.ratio),
+        ..Sizing::default()
+    }
+}
+
+/// Fits `image` to art in `mode`, renders it, ascii with `charset`, and
+/// writes the art file at `path`.
+fn encode_image(
+    image: &RgbaImage,
+    mode: Mode,
+    sizing: &Sizing,
+    charset: &Charset,
+    path: &Path,
+) -> Result<(), CliError> {
+    let fit = size::fit(image, mode, sizing);
     let rows = match mode {
         Mode::Halfblock => render::halfblock(&fit.image),
-        Mode::Ascii => render::ascii(
-            &fit.image,
-            args.charset.as_ref().unwrap_or(&config.encode.charset),
-        ),
+        Mode::Ascii => render::ascii(&fit.image, charset),
         Mode::Braille => render::braille(&fit.image),
     };
-    let path = args.output.as_deref().unwrap_or(&config.banner.image);
     write_art(path, &rows).map_err(|source| CliError::Write {
         path: path.to_path_buf(),
         source,

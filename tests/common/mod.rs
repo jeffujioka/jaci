@@ -1,14 +1,14 @@
 //! What the binary tests share: a run of the built `jaci` with its config
 //! folder and home folder in temporary folders, with piped stdio or with
-//! stdout on a pseudo-terminal of a fixed size.
+//! stdout on a pseudo-terminal of a chosen size.
 
 // Each test binary compiles this module whole and uses only part of it.
 #![allow(dead_code)]
 
 use std::fs::{self, File};
-use std::io::{self, Read as _};
+use std::io::{self, Read as _, Write as _};
 use std::os::fd::{FromRawFd as _, OwnedFd};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Output, Stdio};
 use std::ptr;
 use std::sync::{Mutex, MutexGuard, PoisonError};
@@ -21,6 +21,8 @@ use tempfile::TempDir;
 pub const TERMINAL_COLUMNS: u16 = 100;
 /// The height of the pseudo-terminal [`in_terminal`] runs jaci on.
 pub const TERMINAL_ROWS: u16 = 40;
+/// Follows every error jaci reports.
+pub const HELP_LINE: &str = "Run 'jaci --help' or 'jaci init --help' for more details.";
 
 /// Held from the creation of fds that are not yet closed on exec until the
 /// child that should get them has been spawned, so no child of another test
@@ -64,6 +66,10 @@ impl Env {
         self.config_folder().join("config.toml")
     }
 
+    pub fn home(&self) -> &Path {
+        self.home.path()
+    }
+
     /// The command `jaci <args>`, run from the crate folder so
     /// `test_fixtures/` resolves, with this env's config and home folders.
     pub fn command(&self, args: &[&str]) -> Command {
@@ -76,22 +82,48 @@ impl Env {
         command
     }
 
-    /// Runs `jaci <args>` with piped stdio.
+    /// Runs `jaci <args>` with piped stdout and stderr and a null stdin.
     pub fn jaci(&self, args: &[&str]) -> Output {
+        self.run(args, None)
+    }
+
+    /// Runs `jaci <args>` with piped stdio, `input` on its stdin.
+    pub fn jaci_with_input(&self, args: &[&str], input: &str) -> Output {
+        self.run(args, Some(input))
+    }
+
+    /// Runs `jaci <args>` with piped stdout and stderr, and stdin a pipe
+    /// holding `input`, else null.
+    fn run(&self, args: &[&str], input: Option<&str>) -> Output {
         let mut command = self.command(args);
         command
-            .stdin(Stdio::null())
+            .stdin(input.map_or_else(Stdio::null, |_| Stdio::piped()))
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         let spawns = lock_spawns();
-        let child = command.spawn().unwrap();
+        let mut child = command.spawn().unwrap();
         drop(spawns);
+        if let Some(input) = input {
+            // Dropped at the end of the block, so jaci reads the end of input.
+            let mut stdin = child.stdin.take().unwrap();
+            match stdin.write_all(input.as_bytes()) {
+                // jaci may stop before it reads all of its input.
+                Err(error) if error.kind() != io::ErrorKind::BrokenPipe => {
+                    panic!("writing jaci's stdin: {error}")
+                }
+                _ => {}
+            }
+        }
         child.wait_with_output().unwrap()
     }
 }
 
 pub fn stderr(output: &Output) -> String {
     String::from_utf8(output.stderr.clone()).unwrap()
+}
+
+pub fn stdout(output: &Output) -> String {
+    String::from_utf8(output.stdout.clone()).unwrap()
 }
 
 /// How a run on a pseudo-terminal ended.
@@ -106,13 +138,18 @@ pub struct TerminalRun {
     pub elapsed: Duration,
 }
 
-/// Runs `command` with its stdout on a new pseudo-terminal
-/// [`TERMINAL_COLUMNS`] wide and [`TERMINAL_ROWS`] high, its stdin null and
-/// its stderr piped, and reads the terminal until the child has exited and
-/// closed it.
-pub fn in_terminal(mut command: Command) -> TerminalRun {
+/// Runs `command` as [`in_terminal_sized`] does, on a pseudo-terminal
+/// [`TERMINAL_COLUMNS`] wide and [`TERMINAL_ROWS`] high.
+pub fn in_terminal(command: Command) -> TerminalRun {
+    in_terminal_sized(command, TERMINAL_COLUMNS, TERMINAL_ROWS)
+}
+
+/// Runs `command` with its stdout on a new pseudo-terminal `columns` wide
+/// and `rows` high, its stdin null and its stderr piped, and reads the
+/// terminal until the child has exited and closed it.
+pub fn in_terminal_sized(mut command: Command, columns: u16, rows: u16) -> TerminalRun {
     let spawns = lock_spawns();
-    let (master, slave) = open_terminal();
+    let (master, slave) = open_terminal(columns, rows);
     command
         .stdin(Stdio::null())
         .stdout(Stdio::from(slave))
@@ -135,13 +172,13 @@ pub fn in_terminal(mut command: Command) -> TerminalRun {
     }
 }
 
-/// A new pseudo-terminal's master and slave, both closed on exec. Call it
-/// holding [`SPAWN`], so no child of another thread inherits them before
-/// they are.
-fn open_terminal() -> (OwnedFd, OwnedFd) {
+/// A new pseudo-terminal `columns` wide and `rows` high: its master and
+/// slave, both closed on exec. Call it holding [`SPAWN`], so no child of
+/// another thread inherits them before they are.
+fn open_terminal(columns: u16, rows: u16) -> (OwnedFd, OwnedFd) {
     let mut size = libc::winsize {
-        ws_row: TERMINAL_ROWS,
-        ws_col: TERMINAL_COLUMNS,
+        ws_row: rows,
+        ws_col: columns,
         ws_xpixel: 0,
         ws_ypixel: 0,
     };
