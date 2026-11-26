@@ -3,7 +3,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use jaci::config::{self, Align, Banner, Block, BlockText, Config, Encode, Style, Text, Valign};
-use jaci::render::{Charset, Mode};
+use jaci::render::{AsciiStyle, Charset, Mode};
 use jaci::template::Segment;
 use tempfile::TempDir;
 
@@ -50,10 +50,11 @@ fn missing_config_gives_defaults() {
         config,
         Config {
             encode: Encode {
-                mode: Mode::Halfblock,
+                mode: Mode::Ascii,
                 width: 80,
                 ratio: 0.5,
-                charset: Charset::default(),
+                ascii_style: AsciiStyle::Bright,
+                charset: None,
             },
             banner: Banner {
                 image: folder.path().join("art.ansi"),
@@ -74,6 +75,7 @@ fn every_key_loads_its_value() {
         r##"
 [encode]
 mode = "braille"
+ascii_style = "tinted"
 width = 120
 ratio = 0.45
 charset = " #"
@@ -104,7 +106,8 @@ style = "dim"
                 mode: Mode::Braille,
                 width: 120,
                 ratio: 0.45,
-                charset: Charset::new(" #").unwrap(),
+                ascii_style: AsciiStyle::Tinted,
+                charset: Some(Charset::new(" #").unwrap()),
             },
             banner: Banner {
                 image: Path::new(HOME).join("art/logo.ansi"),
@@ -228,6 +231,19 @@ fn blank_block_command_refused() {
             "{command:?}"
         );
     }
+}
+
+#[test]
+fn bad_ascii_style_names_key() {
+    let (path, message) = load_error("[encode]\nascii_style = \"neon\"\n");
+
+    assert_eq!(
+        message,
+        format!(
+            "jaci: config {}: line 2: encode.ascii_style must be one of plain, bright, dense, tinted",
+            path.display()
+        )
+    );
 }
 
 #[test]

@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 
 use crate::config::{self, Align, DEFAULT_PADDING, Encode, HOME_PREFIX, Style, Valign};
 use crate::named::Named;
-use crate::render::{DEFAULT_CHARSET, Mode};
+use crate::render::{AsciiStyle, DEFAULT_CHARSET, Mode};
 use crate::sysinfo::{DynamicVariable, StaticVariable};
 
 /// One text block per built-in variable.
@@ -184,12 +184,15 @@ pub fn full(image: &str, settings: &Settings) -> String {
 [encode]
 # The render mode: {modes}.
 mode = {mode}
+# How ascii mode picks and colours its characters: {styles}.
+ascii_style = {style}
 # The art's width in columns: a whole number of at least 1.
 width = {width}
 # Character width ÷ height, which keeps the art's proportions: a number above 0.
 ratio = {ratio}
-# The characters ascii mode draws with, darkest first.
-charset = {charset}
+# The characters ascii mode draws with, darkest first; left out, the ascii
+# style's own.
+# charset = {charset}
 
 [banner]
 # The art file the banner shows; a leading ~/ is the home folder.
@@ -218,6 +221,8 @@ valign = {valign}
 ",
         modes = Mode::one_of(),
         mode = toml_value(encode.mode.name()),
+        styles = AsciiStyle::one_of(),
+        style = toml_value(encode.ascii_style.name()),
         width = toml_value(i64::from(encode.width)),
         ratio = toml_value(encode.ratio),
         charset = toml_value(DEFAULT_CHARSET),
