@@ -1,0 +1,108 @@
+use std::fs;
+use std::path::{Path, PathBuf};
+
+use jaci::cache::{self, Cache};
+use jaci::sysinfo::StaticVariable::{self, Cpu, Gpu, Hostname, Os};
+use tempfile::TempDir;
+
+/// A fresh folder (kept alive) and the path of a cache file in it.
+fn cache_file() -> (TempDir, PathBuf) {
+    let folder = TempDir::new().unwrap();
+    let path = folder.path().join("cache");
+    (folder, path)
+}
+
+fn cache_of(values: &[(StaticVariable, &str)]) -> Cache {
+    values
+        .iter()
+        .map(|&(variable, value)| (variable, value.to_owned()))
+        .collect()
+}
+
+/// Reads the cache file at `path`, failing the test when it is missing or
+/// damaged.
+fn read(path: &Path) -> Cache {
+    cache::read(path)
+        .unwrap_or_else(|error| panic!("{error}"))
+        .expect("the cache file is missing")
+}
+
+#[test]
+fn saved_values_read_back() {
+    let (_folder, path) = cache_file();
+    let values = [(Hostname, "h1"), (Os, "o1"), (Cpu, "c1"), (Gpu, "g1")];
+
+    cache::write(&path, &cache_of(&values)).unwrap();
+    let cache = read(&path);
+
+    for (variable, value) in values {
+        assert_eq!(cache.get(variable), Some(value), "{}", variable.name());
+    }
+}
+
+#[test]
+fn quoted_values_read_back() {
+    let (_folder, path) = cache_file();
+    let value = "say \"hi\" \\ it's\nnew\tline";
+
+    cache::write(&path, &cache_of(&[(Cpu, value)])).unwrap();
+
+    assert_eq!(read(&path).get(Cpu), Some(value));
+}
+
+#[test]
+fn partial_cache_reads() {
+    let (_folder, path) = cache_file();
+    fs::write(&path, "hostname = \"h1\"\n").unwrap();
+
+    let cache = read(&path);
+
+    assert_eq!(cache.get(Hostname), Some("h1"));
+    for variable in [Os, Cpu, Gpu] {
+        assert_eq!(cache.get(variable), None, "{}", variable.name());
+    }
+}
+
+#[test]
+fn missing_cache_is_none() {
+    let (_folder, path) = cache_file();
+
+    assert_eq!(cache::read(&path).unwrap(), None);
+}
+
+#[test]
+fn damaged_cache_reported() {
+    let (_folder, path) = cache_file();
+    fs::write(&path, "hostname = ").unwrap();
+
+    let error = cache::read(&path).unwrap_err();
+
+    assert_eq!(
+        error.to_string(),
+        format!(
+            "jaci: cache {} is damaged; run 'jaci cache' to rebuild it",
+            path.display()
+        )
+    );
+}
+
+#[test]
+fn other_values_and_keys_are_damaged() {
+    let inputs: [&[u8]; 4] = [
+        b"hostname = 1\n",
+        b"[hostname]\nos = \"o1\"\n",
+        b"ram = \"1 GiB\"\n",
+        b"hostname = \"\xff\"\n",
+    ];
+    for input in inputs {
+        let (_folder, path) = cache_file();
+        fs::write(&path, input).unwrap();
+
+        let error = cache::read(&path).unwrap_err().to_string();
+
+        assert!(
+            error.ends_with(" is damaged; run 'jaci cache' to rebuild it"),
+            "{error}"
+        );
+    }
+}

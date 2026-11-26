@@ -2,6 +2,13 @@
 //! shell-startup banner beside a text panel.
 
 pub mod art_file;
+pub mod cache;
+pub mod cli;
+pub mod compose;
+pub mod config;
 pub mod image_input;
 pub mod render;
 pub mod size;
+pub mod sysinfo;
+pub mod template;
+pub mod text;

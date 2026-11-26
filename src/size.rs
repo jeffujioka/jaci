@@ -8,10 +8,15 @@ use image::{Rgba32FImage, RgbaImage};
 
 use crate::render::Mode;
 
-const DEFAULT_COLUMNS: u32 = 80;
-const DEFAULT_RATIO: f64 = 0.5;
+pub(crate) const DEFAULT_COLUMNS: u32 = 80;
+pub(crate) const DEFAULT_RATIO: f64 = 0.5;
 /// Lanczos3 keeps photos sharp when they shrink to a few dozen cells.
 const FILTER: FilterType = FilterType::Lanczos3;
+
+/// Whether `ratio` is a valid character width ÷ height: finite and above 0.
+pub fn valid_ratio(ratio: f64) -> bool {
+    ratio.is_finite() && ratio > 0.0
+}
 
 /// The sizing inputs, already valid: options from the command line and keys
 /// from the config. `None` and `false` mean not given.
@@ -163,5 +168,15 @@ mod tests {
 
         assert_eq!(fit(&image, Mode::Halfblock, &config).rows, 20);
         assert_eq!(fit(&image, Mode::Halfblock, &option).rows, 80);
+    }
+
+    #[test]
+    fn ratio_is_valid_only_finite_and_above_zero() {
+        for ratio in [0.5, 1.0, f64::MIN_POSITIVE, 1e300] {
+            assert!(valid_ratio(ratio), "{ratio}");
+        }
+        for ratio in [0.0, -0.0, -1.0, f64::INFINITY, f64::NEG_INFINITY, f64::NAN] {
+            assert!(!valid_ratio(ratio), "{ratio}");
+        }
     }
 }

@@ -5,6 +5,7 @@ use std::error::Error;
 use std::fmt;
 use std::fs;
 use std::io;
+use std::iter;
 use std::path::{Path, PathBuf};
 
 use unicode_width::UnicodeWidthChar;
@@ -119,24 +120,44 @@ pub fn read(path: &Path) -> Result<Art, ArtFileError> {
     Ok(Art { rows, columns })
 }
 
-/// The display width of `text`, skipping escape sequences: a CSI sequence
-/// (`ESC [` up to its final byte in `@`..=`~`) or any other two-character
-/// escape.
-fn visible_width(text: &str) -> usize {
-    let mut chars = text.chars();
-    let mut width = 0;
-    while let Some(c) = chars.next() {
-        if c != ESC {
-            width += c.width().unwrap_or(0);
-            continue;
+/// The display width of `text`, skipping its escape sequences.
+pub(crate) fn visible_width(text: &str) -> usize {
+    tokens(text)
+        .map(|token| match token {
+            Token::Escape(_) => 0,
+            Token::Char(c) => c.width().unwrap_or(0),
+        })
+        .sum()
+}
+
+/// One piece of text as a terminal reads it.
+pub(crate) enum Token<'a> {
+    /// A CSI sequence (`ESC [` up to its final byte in `@`..=`~`) or any
+    /// other two-character escape.
+    Escape(&'a str),
+    /// A character outside escape sequences.
+    Char(char),
+}
+
+/// The tokens of `text`, in order.
+pub(crate) fn tokens(text: &str) -> impl Iterator<Item = Token<'_>> {
+    let mut rest = text;
+    iter::from_fn(move || {
+        let mut chars = rest.char_indices();
+        let (_, first) = chars.next()?;
+        if first != ESC {
+            rest = &rest[first.len_utf8()..];
+            return Some(Token::Char(first));
         }
-        if chars.next() == Some('[') {
-            for c in chars.by_ref() {
-                if ('@'..='~').contains(&c) {
-                    break;
-                }
-            }
-        }
-    }
-    width
+        let end = match chars.next() {
+            Some((_, '[')) => chars
+                .find(|&(_, c)| ('@'..='~').contains(&c))
+                .map_or(rest.len(), |(index, c)| index + c.len_utf8()),
+            Some((index, c)) => index + c.len_utf8(),
+            None => rest.len(),
+        };
+        let (escape, tail) = rest.split_at(end);
+        rest = tail;
+        Some(Token::Escape(escape))
+    })
 }
