@@ -65,7 +65,8 @@ jobs:
           echo "$versions"
           test -n "$versions"
           test "$(printf '%s\nGLIBC_2.17\n' "$versions" | sort -V | tail -n 1)" = GLIBC_2.17
-      - run: tar -czf jaci-${{ github.ref_name }}-${{ matrix.target }}.tar.gz -C target/${{ matrix.target }}/release jaci
+      # The licence goes beside the binary in every archive.
+      - run: tar -czf jaci-${{ github.ref_name }}-${{ matrix.target }}.tar.gz -C target/${{ matrix.target }}/release jaci -C "$GITHUB_WORKSPACE" LICENSE
       - run: gh release upload "$GITHUB_REF_NAME" jaci-${{ github.ref_name }}-${{ matrix.target }}.tar.gz --clobber
         env:
           GH_TOKEN: ${{ github.token }}
