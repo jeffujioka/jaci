@@ -3,7 +3,8 @@ use std::path::Path;
 
 use image::{Rgba, RgbaImage};
 use jaci::art_file;
-use jaci::render::{self, Charset};
+use jaci::named::Named;
+use jaci::render::{self, AsciiStyle, Charset};
 use tempfile::TempDir;
 
 const TRANSPARENT: Rgba<u8> = Rgba([0, 0, 0, 0]);
@@ -73,7 +74,7 @@ fn ascii_luminance_picks_character() {
     let image = image(2, 1, &[Rgba([0, 0, 0, 255]), Rgba([255, 255, 255, 255])]);
 
     assert_eq!(
-        render::ascii(&image, &Charset::default()),
+        render::ascii(&image, AsciiStyle::Plain, &Charset::default()),
         ["\x1b[38;2;0;0;0m \x1b[0m\x1b[38;2;255;255;255m@\x1b[0m"]
     );
 }
@@ -88,7 +89,7 @@ fn ascii_custom_charset() {
     let charset = Charset::new("ab").unwrap();
 
     assert_eq!(
-        render::ascii(&image, &charset),
+        render::ascii(&image, AsciiStyle::Plain, &charset),
         ["\x1b[38;2;100;100;100ma\x1b[0m\x1b[38;2;200;200;200mb\x1b[0m"]
     );
 }
@@ -97,7 +98,10 @@ fn ascii_custom_charset() {
 fn ascii_transparent_pixel_is_space() {
     let image = image(1, 1, &[TRANSPARENT]);
 
-    assert_eq!(render::ascii(&image, &Charset::default()), [" "]);
+    assert_eq!(
+        render::ascii(&image, AsciiStyle::Plain, &Charset::default()),
+        [" "]
+    );
 }
 
 #[test]
@@ -106,7 +110,7 @@ fn ascii_exact_luminance_boundary() {
     let image = image(1, 1, &[Rgba([128, 128, 128, 255])]);
 
     assert_eq!(
-        render::ascii(&image, &Charset::default()),
+        render::ascii(&image, AsciiStyle::Plain, &Charset::default()),
         ["\x1b[38;2;128;128;128m+\x1b[0m"]
     );
 }
@@ -114,11 +118,176 @@ fn ascii_exact_luminance_boundary() {
 #[test]
 fn ascii_golden() {
     assert_golden(
-        &render::ascii(&fixture(), &Charset::default()),
+        &render::ascii(&fixture(), AsciiStyle::Plain, &Charset::default()),
         "4x4-ascii.ansi",
         4,
         4,
     );
+}
+
+/// One opaque pixel per colour, in a row.
+fn row(colours: &[[u8; 3]]) -> RgbaImage {
+    let pixels: Vec<_> = colours
+        .iter()
+        .map(|&[r, g, b]| Rgba([r, g, b, 255]))
+        .collect();
+    image(colours.len() as u32, 1, &pixels)
+}
+
+#[test]
+fn ascii_styles_have_their_names_and_bright_is_the_default() {
+    assert_eq!(AsciiStyle::names(), "plain, bright, dense, tinted");
+    assert_eq!(AsciiStyle::default(), AsciiStyle::Bright);
+}
+
+#[test]
+fn bright_stretches_contrast_and_lifts_brightness() {
+    // lo = 0 and hi = 255 000, so the levels are 0 and 1.
+    assert_eq!(
+        render::ascii(
+            &row(&[[0, 0, 0], [255, 255, 255]]),
+            AsciiStyle::Bright,
+            &Charset::default()
+        ),
+        ["\x1b[38;2;153;153;153m \x1b[0m\x1b[38;2;255;255;255m@\x1b[0m"]
+    );
+}
+
+#[test]
+fn bright_keeps_the_hue() {
+    let image = row(&[[120, 60, 0], [240, 120, 0], [0, 0, 0], [255, 255, 255]]);
+
+    let rows = render::ascii(&image, AsciiStyle::Bright, &Charset::default());
+
+    assert!(
+        rows[0].starts_with("\x1b[38;2;192;96;0m-\x1b[0m\x1b[38;2;219;109;0m*\x1b[0m"),
+        "{rows:?}"
+    );
+}
+
+#[test]
+fn bright_takes_the_2nd_and_98th_percentile() {
+    // 100 greys, 0 to 99: lo is the grey at index 2, hi the one at index 98.
+    let greys: Vec<[u8; 3]> = (0..100).map(|grey| [grey; 3]).collect();
+
+    let rows = render::ascii(&row(&greys), AsciiStyle::Bright, &Charset::default());
+
+    let cells: Vec<&str> = rows[0].split_inclusive("\x1b[0m").collect();
+    assert_eq!(cells.len(), 100);
+    for cell in &cells[..3] {
+        assert_eq!(*cell, "\x1b[38;2;153;153;153m \x1b[0m");
+    }
+    assert_ne!(cells[3], cells[2]);
+    assert_ne!(cells[97], cells[98]);
+    for cell in &cells[98..] {
+        assert_eq!(*cell, "\x1b[38;2;255;255;255m@\x1b[0m");
+    }
+}
+
+#[test]
+fn bright_flat_image_uses_plain_luminance() {
+    // hi = lo, so the level is Y ÷ 255 000 with no stretch.
+    assert_eq!(
+        render::ascii(
+            &row(&[[200, 10, 10], [200, 10, 10]]),
+            AsciiStyle::Bright,
+            &Charset::default()
+        ),
+        ["\x1b[38;2;190;10;10m-\x1b[0m\x1b[38;2;190;10;10m-\x1b[0m"]
+    );
+    assert_eq!(
+        render::ascii(
+            &row(&[[128, 128, 128]]),
+            AsciiStyle::Bright,
+            &Charset::default()
+        ),
+        ["\x1b[38;2;214;214;214m+\x1b[0m"]
+    );
+}
+
+#[test]
+fn bright_all_transparent_is_spaces() {
+    let image = image(2, 1, &[TRANSPARENT, TRANSPARENT]);
+
+    for style in [AsciiStyle::Bright, AsciiStyle::Dense, AsciiStyle::Tinted] {
+        assert_eq!(render::ascii(&image, style, &Charset::default()), ["  "]);
+    }
+}
+
+#[test]
+fn bright_skips_transparent_pixels_in_the_percentiles() {
+    let image = image(
+        3,
+        1,
+        &[
+            TRANSPARENT,
+            Rgba([255, 255, 255, 255]),
+            Rgba([0, 0, 0, 255]),
+        ],
+    );
+
+    assert_eq!(
+        render::ascii(&image, AsciiStyle::Bright, &Charset::default()),
+        [" \x1b[38;2;255;255;255m@\x1b[0m\x1b[38;2;153;153;153m \x1b[0m"]
+    );
+}
+
+#[test]
+fn bright_with_one_character_draws_it_everywhere() {
+    let rows = render::ascii(
+        &row(&[[0, 0, 0], [255, 255, 255]]),
+        AsciiStyle::Bright,
+        &Charset::new("#").unwrap(),
+    );
+
+    assert_eq!(
+        rows,
+        ["\x1b[38;2;153;153;153m#\x1b[0m\x1b[38;2;255;255;255m#\x1b[0m"]
+    );
+}
+
+#[test]
+fn dense_has_70_characters_of_its_own() {
+    let style = AsciiStyle::Dense;
+
+    assert_eq!(
+        render::ascii(&row(&[[0, 0, 0], [255, 255, 255]]), style, &style.charset()),
+        ["\x1b[38;2;153;153;153m \x1b[0m\x1b[38;2;255;255;255m$\x1b[0m"]
+    );
+    for style in [AsciiStyle::Plain, AsciiStyle::Bright, AsciiStyle::Tinted] {
+        assert_eq!(style.charset(), Charset::default());
+    }
+}
+
+#[test]
+fn tinted_adds_the_pixel_colour_at_40_percent_behind() {
+    assert_eq!(
+        render::ascii(
+            &row(&[[0, 0, 0], [255, 255, 255]]),
+            AsciiStyle::Tinted,
+            &Charset::default()
+        ),
+        [concat!(
+            "\x1b[38;2;153;153;153m\x1b[48;2;0;0;0m \x1b[0m",
+            "\x1b[38;2;255;255;255m\x1b[48;2;102;102;102m@\x1b[0m"
+        )]
+    );
+}
+
+#[test]
+fn ascii_style_goldens() {
+    for (style, golden) in [
+        (AsciiStyle::Bright, "4x4-ascii-bright.ansi"),
+        (AsciiStyle::Dense, "4x4-ascii-dense.ansi"),
+        (AsciiStyle::Tinted, "4x4-ascii-tinted.ansi"),
+    ] {
+        assert_golden(
+            &render::ascii(&fixture(), style, &style.charset()),
+            golden,
+            4,
+            4,
+        );
+    }
 }
 
 #[test]
