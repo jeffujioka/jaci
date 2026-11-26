@@ -35,6 +35,7 @@ fn block_contents() -> impl Iterator<Item = String> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Settings {
     pub mode: Mode,
+    pub ascii_style: AsciiStyle,
     pub width: u32,
     /// Whether each built-in variable's block is written, in the order of
     /// the variables.
@@ -47,6 +48,7 @@ impl Default for Settings {
         let encode = Encode::default();
         Self {
             mode: encode.mode,
+            ascii_style: encode.ascii_style,
             width: encode.width,
             shown: [true; BLOCK_COUNT],
         }
@@ -55,10 +57,11 @@ impl Default for Settings {
 
 impl Settings {
     /// The `[encode]` keys a config written with these settings holds: their
-    /// mode and width, every other key its default.
+    /// mode, ascii style and width, every other key its default.
     pub fn encode(&self) -> Encode {
         Encode {
             mode: self.mode,
+            ascii_style: self.ascii_style,
             width: self.width,
             ..Encode::default()
         }
@@ -74,6 +77,8 @@ pub enum InitError {
     Cancelled { path: PathBuf },
     /// The render mode answer is not a mode's name.
     InvalidMode(String),
+    /// The ascii style answer is not a style's name.
+    InvalidStyle(String),
     /// The width answer is not a whole number of at least 1.
     InvalidWidth(String),
     /// A yes or no answer is neither.
@@ -96,6 +101,7 @@ impl fmt::Display for InitError {
                 write!(f, "jaci: init cancelled; {} left unchanged", path.display())
             }
             Self::InvalidMode(answer) => write!(f, "jaci: '{answer}' is not a valid render mode"),
+            Self::InvalidStyle(answer) => write!(f, "jaci: '{answer}' is not a valid ascii style"),
             Self::InvalidWidth(answer) => write!(f, "jaci: '{answer}' is not a valid width"),
             Self::InvalidAnswer(answer) => write!(f, "jaci: '{answer}' is not a valid answer"),
             Self::Prompt(source) => write!(f, "jaci: cannot ask init's questions: {source}"),
@@ -118,6 +124,7 @@ impl Error for InitError {
             Self::NoImage
             | Self::Cancelled { .. }
             | Self::InvalidMode(_)
+            | Self::InvalidStyle(_)
             | Self::InvalidWidth(_)
             | Self::InvalidAnswer(_)
             | Self::NotUtf8 { .. } => None,
@@ -150,9 +157,9 @@ fn toml_value(value: impl Into<toml::Value>) -> String {
 }
 
 /// The full config: every key with its value and a comment line above it,
-/// `[banner].image` set to `image`, the mode and width of `settings`, a
-/// block for each variable `settings` shows, and commented-out examples of
-/// the other block keys.
+/// `[banner].image` set to `image`, the mode, ascii style and width of
+/// `settings`, a block for each variable `settings` shows, and commented-out
+/// examples of the other block keys.
 pub fn full(image: &str, settings: &Settings) -> String {
     let encode = settings.encode();
     let mut blocks = String::new();
@@ -292,14 +299,16 @@ pub fn ask_image(
     }
 }
 
-/// Asks for the render mode, the width, then whether to show each built-in
-/// variable, an empty answer taking the default.
+/// Asks for the render mode, the ascii style when that mode is ascii, the
+/// width, then whether to show each built-in variable, an empty answer
+/// taking the default.
 ///
 /// # Errors
 ///
-/// [`InitError::InvalidMode`], [`InitError::InvalidWidth`] or
-/// [`InitError::InvalidAnswer`] at the first answer that is not valid, and
-/// [`InitError::Prompt`] when a question cannot be asked.
+/// [`InitError::InvalidMode`], [`InitError::InvalidStyle`],
+/// [`InitError::InvalidWidth`] or [`InitError::InvalidAnswer`] at the first
+/// answer that is not valid, and [`InitError::Prompt`] when a question cannot
+/// be asked.
 pub fn ask_settings(
     input: &mut impl BufRead,
     output: &mut impl Write,
@@ -311,6 +320,16 @@ pub fn ask_settings(
         defaults.mode.name()
     );
     let mode = parse_mode(&ask(input, output, &question)?, defaults.mode)?;
+    let ascii_style = if mode == Mode::Ascii {
+        let question = format!(
+            "Ascii style ({}) [{}]: ",
+            AsciiStyle::names(),
+            defaults.ascii_style.name()
+        );
+        parse_style(&ask(input, output, &question)?, defaults.ascii_style)?
+    } else {
+        defaults.ascii_style
+    };
     let question = format!("Width in columns [{}]: ", defaults.width);
     let width = parse_width(&ask(input, output, &question)?, defaults.width)?;
     let mut shown = defaults.shown;
@@ -318,7 +337,12 @@ pub fn ask_settings(
         let question = format!("Show {{{name}}}? [Y/n]: ");
         *show = parse_yes_no(&ask(input, output, &question)?, *show)?;
     }
-    Ok(Settings { mode, width, shown })
+    Ok(Settings {
+        mode,
+        ascii_style,
+        width,
+        shown,
+    })
 }
 
 /// Writes `question` to `output` with no newline, then reads one line of
@@ -343,6 +367,14 @@ fn parse_mode(answer: &str, default: Mode) -> Result<Mode, InitError> {
         return Ok(default);
     }
     Mode::from_name(answer).ok_or_else(|| InitError::InvalidMode(answer.to_owned()))
+}
+
+/// The ascii style `answer` names, `default` when it is empty.
+fn parse_style(answer: &str, default: AsciiStyle) -> Result<AsciiStyle, InitError> {
+    if answer.is_empty() {
+        return Ok(default);
+    }
+    AsciiStyle::from_name(answer).ok_or_else(|| InitError::InvalidStyle(answer.to_owned()))
 }
 
 /// The whole number of at least 1 in `answer`, `default` when it is empty.
@@ -407,6 +439,10 @@ mod tests {
     #[test]
     fn empty_answers_take_the_defaults() {
         assert_eq!(parse_mode("", Mode::Ascii).unwrap(), Mode::Ascii);
+        assert_eq!(
+            parse_style("", AsciiStyle::Dense).unwrap(),
+            AsciiStyle::Dense
+        );
         assert_eq!(parse_width("", 7).unwrap(), 7);
         assert!(parse_yes_no("", true).unwrap());
     }
@@ -416,6 +452,10 @@ mod tests {
         assert_eq!(
             parse_mode("braille", Mode::Halfblock).unwrap(),
             Mode::Braille
+        );
+        assert_eq!(
+            parse_style("tinted", AsciiStyle::Bright).unwrap(),
+            AsciiStyle::Tinted
         );
         assert_eq!(parse_width("40", 80).unwrap(), 40);
         for (answer, shown) in [("y", true), ("YES", true), ("N", false), ("no", false)] {
@@ -430,6 +470,10 @@ mod tests {
         assert_eq!(
             message(parse_mode("Braille", Mode::Halfblock).map(drop)),
             "jaci: 'Braille' is not a valid render mode"
+        );
+        assert_eq!(
+            message(parse_style("Tinted", AsciiStyle::Bright).map(drop)),
+            "jaci: 'Tinted' is not a valid ascii style"
         );
         for width in ["0", "-3", "4.5", "wide"] {
             assert_eq!(
