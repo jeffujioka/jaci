@@ -329,3 +329,76 @@ fn braille_missing_pixels_are_transparent() {
 
     assert_eq!(render::braille(&image), ["\x1b[38;2;255;0;0m⠁\x1b[0m"]);
 }
+
+#[test]
+fn quadrant_transparent_cell_is_space() {
+    assert_eq!(render::quadrant(&image(2, 2, &[TRANSPARENT; 4])), [" "]);
+}
+
+#[test]
+fn quadrant_partial_cell_draws_its_opaque_quarters() {
+    let red = Rgba([255, 0, 0, 255]);
+    let blue = Rgba([0, 0, 255, 255]);
+
+    assert_eq!(
+        render::quadrant(&image(2, 2, &[red, TRANSPARENT, TRANSPARENT, TRANSPARENT])),
+        ["\x1b[38;2;255;0;0m▘\x1b[0m"]
+    );
+    assert_eq!(
+        render::quadrant(&image(2, 2, &[TRANSPARENT, blue, TRANSPARENT, blue])),
+        ["\x1b[38;2;0;0;255m▐\x1b[0m"]
+    );
+}
+
+#[test]
+fn quadrant_partial_cell_mean_rounds_half_up() {
+    let image = image(
+        2,
+        2,
+        &[
+            Rgba([0, 0, 0, 255]),
+            Rgba([1, 1, 1, 255]),
+            TRANSPARENT,
+            TRANSPARENT,
+        ],
+    );
+
+    assert_eq!(render::quadrant(&image), ["\x1b[38;2;1;1;1m▀\x1b[0m"]);
+}
+
+#[test]
+fn quadrant_full_cell_splits_into_two_colours() {
+    let red = Rgba([255, 0, 0, 255]);
+    let blue = Rgba([0, 0, 255, 255]);
+
+    // Left column red, right column blue: the foreground is quarters 1 + 4.
+    assert_eq!(
+        render::quadrant(&image(2, 2, &[red, blue, red, blue])),
+        ["\x1b[38;2;255;0;0m\x1b[48;2;0;0;255m▌\x1b[0m"]
+    );
+}
+
+#[test]
+fn quadrant_uniform_cell_takes_the_lowest_split() {
+    let grey = Rgba([10, 20, 30, 255]);
+
+    assert_eq!(
+        render::quadrant(&image(2, 2, &[grey; 4])),
+        ["\x1b[38;2;10;20;30m\x1b[48;2;10;20;30m▘\x1b[0m"]
+    );
+}
+
+#[test]
+fn quadrant_missing_pixels_are_transparent() {
+    let red = Rgba([255, 0, 0, 255]);
+
+    assert_eq!(
+        render::quadrant(&image(3, 1, &[red; 3])),
+        ["\x1b[38;2;255;0;0m▀\x1b[0m\x1b[38;2;255;0;0m▘\x1b[0m"]
+    );
+}
+
+#[test]
+fn quadrant_golden() {
+    assert_golden(&render::quadrant(&fixture()), "4x4-quadrant.ansi", 2, 2);
+}

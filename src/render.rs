@@ -12,9 +12,11 @@ use crate::ansi::{self, RESET};
 use crate::named::Named;
 
 mod ascii;
+mod quadrant;
 
 pub(crate) use ascii::DEFAULT_CHARSET;
 pub use ascii::{AsciiStyle, Charset, ascii};
+pub use quadrant::quadrant;
 
 const BRAILLE_BLANK: u32 = 0x2800;
 /// Each braille dot as its pixel's offset in the 2×4 cell and its bit:
@@ -36,22 +38,25 @@ type Rgb = [u8; 3];
 /// pixels.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
-    /// [`halfblock`]: 1×2 pixels per cell.
-    Halfblock,
     /// [`ascii`]: 1×1 pixel per cell.
     Ascii,
+    /// [`halfblock`]: 1×2 pixels per cell.
+    Halfblock,
+    /// [`quadrant`]: 2×2 pixels per cell.
+    Quadrant,
     /// [`braille`]: 2×4 pixels per cell.
     Braille,
 }
 
 impl Named for Mode {
     /// In the order the help and the messages list them.
-    const ALL: &'static [Self] = &[Self::Halfblock, Self::Ascii, Self::Braille];
+    const ALL: &'static [Self] = &[Self::Ascii, Self::Halfblock, Self::Quadrant, Self::Braille];
 
     fn name(self) -> &'static str {
         match self {
-            Self::Halfblock => "halfblock",
             Self::Ascii => "ascii",
+            Self::Halfblock => "halfblock",
+            Self::Quadrant => "quadrant",
             Self::Braille => "braille",
         }
     }
@@ -61,8 +66,9 @@ impl Mode {
     /// The width and height in pixels of one character cell.
     pub const fn cell_size(self) -> (u32, u32) {
         match self {
-            Self::Halfblock => (1, 2),
             Self::Ascii => (1, 1),
+            Self::Halfblock => (1, 2),
+            Self::Quadrant => (2, 2),
             Self::Braille => (2, 4),
         }
     }
@@ -107,12 +113,16 @@ pub fn braille(image: &RgbaImage) -> Vec<String> {
             row.push(' ');
             return;
         }
-        // Rounds half up: ⌊(2 × sum + n) ÷ 2n⌋.
-        let mean = sums.map(|sum| {
-            u8::try_from((2 * sum + count) / (2 * count)).expect("a mean of u8 values fits in u8")
-        });
         let glyph = char::from_u32(BRAILLE_BLANK + bits).expect("U+2800..=U+28FF are characters");
-        push_cell(row, mean, glyph);
+        push_cell(row, mean(sums, count), glyph);
+    })
+}
+
+/// The mean colour of `count` pixels, not zero, from the sum of each of
+/// their channels, rounded half up: ⌊(2 × sum + n) ÷ 2n⌋.
+fn mean(sums: [u32; 3], count: u32) -> Rgb {
+    sums.map(|sum| {
+        u8::try_from((2 * sum + count) / (2 * count)).expect("a mean of u8 values fits in u8")
     })
 }
 
@@ -154,6 +164,7 @@ mod tests {
 
     #[test]
     fn every_mode_has_its_name() {
-        assert_eq!(Mode::names(), "halfblock, ascii, braille");
+        assert_eq!(Mode::names(), "ascii, halfblock, quadrant, braille");
+        assert_eq!(Mode::Quadrant.cell_size(), (2, 2));
     }
 }

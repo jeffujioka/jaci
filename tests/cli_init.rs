@@ -226,7 +226,7 @@ fn interactive_init_asks_for_image() {
         stdout(&output),
         concat!(
             "Image path: ",
-            "Render mode (halfblock, ascii, braille) [halfblock]: ",
+            "Render mode (ascii, halfblock, quadrant, braille) [halfblock]: ",
             "Width in columns [80]: ",
             "Show {hostname}? [Y/n]: ",
             "Show {os}? [Y/n]: ",
