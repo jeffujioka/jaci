@@ -9,8 +9,8 @@ use std::path::Path;
 use std::time::Duration;
 
 use common::{
-    Env, HELP_LINE, TerminalRun, assert_quiet_success, config_with, in_terminal, read_art,
-    read_cache, stderr,
+    Env, HELP_LINE, TerminalRun, assert_quiet_success, config_with, in_terminal, in_terminal_sized,
+    read_art, read_cache, stderr,
 };
 use jaci::sysinfo::StaticVariable::Hostname;
 use tempfile::TempDir;
@@ -135,6 +135,27 @@ fn banner_starts_fast() {
     assert!(
         run.elapsed < FAST,
         "the banner took {:?}, over the {FAST:?} bound",
+        run.elapsed
+    );
+}
+
+#[test]
+fn no_panel_runs_no_command() {
+    let env = set_up(&config_with(&["{cmd:sleep 2}"]));
+    let art = read_art(Path::new(HALFBLOCK));
+    let rows = art.rows();
+    // Narrower than the art, the default padding of 4 and the narrowest
+    // panel of 20 columns, so no text panel shows.
+    let columns = u16::try_from(art.columns() + 4 + 19).unwrap();
+
+    let run = in_terminal_sized(env.command(&["banner"]), columns, 40);
+
+    let expected: String = rows.iter().map(|row| format!("{row}\n")).collect();
+    assert_shown(&run, &expected);
+    let bound = Duration::from_secs(1);
+    assert!(
+        run.elapsed < bound,
+        "the banner took {:?}: it ran the command with no panel to show",
         run.elapsed
     );
 }

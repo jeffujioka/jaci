@@ -1,7 +1,7 @@
 //! What the tests share: a run of the built `jaci` with its config folder
 //! and home folder in temporary folders, with piped stdio or with stdout on
-//! a pseudo-terminal of a chosen size, and the files such a run reads and
-//! writes.
+//! a pseudo-terminal of a chosen size, the files such a run reads and
+//! writes, and the banner's layout as `jaci banner` makes it.
 //!
 //! Each test binary compiles this module whole and uses only part of it, so
 //! the items some binaries leave unused allow dead code.
@@ -18,7 +18,8 @@ use std::time::{Duration, Instant};
 
 use jaci::art_file::{self, Art};
 use jaci::cache::{self, Cache};
-use jaci::config::{self, Block, BlockText, Config, Style};
+use jaci::compose;
+use jaci::config::{self, Align, Block, BlockText, Config, Style, Valign};
 use jaci::template;
 use tempfile::TempDir;
 
@@ -201,6 +202,23 @@ pub fn content_block(content: &str) -> Block {
         style: Style::Normal,
         color: None,
     }
+}
+
+/// The banner of `art`, `columns` wide, on a terminal `terminal_width`
+/// columns wide, with the panel [`compose::panel_width`] gives, as
+/// `jaci banner` lays it out.
+#[allow(dead_code)]
+pub fn banner(
+    art: &[String],
+    columns: usize,
+    text: &[String],
+    padding: u32,
+    align: Align,
+    valign: Valign,
+    terminal_width: usize,
+) -> Vec<String> {
+    let panel = compose::panel_width(columns, padding, terminal_width);
+    compose::banner(art, columns, text, panel, align, valign)
 }
 
 /// How a run on a pseudo-terminal ended.

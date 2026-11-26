@@ -12,36 +12,61 @@ use crate::config::{Align, Valign};
 /// alone.
 const MIN_PANEL_COLUMNS: usize = 20;
 
-/// The banner's rows, without newlines: each art row, followed by `padding`
-/// spaces and its text row, and the text rows left below the art indented
-/// by the art's width and `padding`. An art row is shown as stored, with a
-/// reset after it when it holds an escape and does not end with one, so its
-/// colours stop with it.
+/// The text panel beside the art: its width and the padding before it.
+/// Only [`panel_width`] makes one, so its width is at least 20 columns and
+/// fits the terminal beside the art and the padding.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Panel {
+    width: usize,
+    padding: usize,
+}
+
+impl Panel {
+    /// The panel's width in columns.
+    pub fn width(self) -> usize {
+        self.width
+    }
+}
+
+/// The text panel beside art `art_columns` wide, after `padding` columns, on
+/// a terminal `terminal_width` columns wide: as wide as what is left of the
+/// terminal, or `None` when that is under 20 columns and the banner shows
+/// the art alone.
+pub fn panel_width(art_columns: usize, padding: u32, terminal_width: usize) -> Option<Panel> {
+    // A padding that leaves no room, even one past usize, leaves no panel.
+    let padding = usize::try_from(padding).ok()?;
+    let width = terminal_width
+        .checked_sub(art_columns)?
+        .checked_sub(padding)?;
+    (width >= MIN_PANEL_COLUMNS).then_some(Panel { width, padding })
+}
+
+/// The banner's rows, without newlines: each art row, followed by the
+/// panel's padding in spaces and its text row, and the text rows left below
+/// the art, indented by `art_columns`, the art's width, and the padding. An
+/// art row is shown as stored, with a reset after it when it holds an
+/// escape and does not end with one, so its colours stop with it.
 ///
-/// The panel is `terminal_width` minus the art's width and `padding` columns
-/// wide; under 20 columns the rows are the art's alone. Each line
-/// of `text` wraps at the panel's width, in display width with escape
-/// sequences counting as nothing, each piece in the style and colours its
-/// line has there and ending with a reset when it holds an escape, and
-/// every piece is placed by `align`. `valign` places text with fewer rows
-/// than the art. No row ends in spaces.
+/// `panel` is the one [`panel_width`] gives for `art_columns`; without one
+/// the rows are the art's alone. Each line of `text` wraps at the panel's
+/// width, in display width with escape sequences counting as nothing, each
+/// piece in the style and colours its line has there and ending with a
+/// reset when it holds an escape, and every piece is placed by `align`.
+/// `valign` places text with fewer rows than the art. No row ends in
+/// spaces.
 pub fn banner(
     art: &[String],
+    art_columns: usize,
     text: &[String],
-    padding: u32,
+    panel: Option<Panel>,
     align: Align,
     valign: Valign,
-    terminal_width: usize,
 ) -> Vec<String> {
-    let art_columns = art.first().map_or(0, |row| ansi::visible_width(row));
-    // A padding that leaves no room, even one past usize, leaves no panel.
-    let room = usize::try_from(padding).ok().and_then(|padding| {
-        let panel = terminal_width
-            .checked_sub(art_columns)?
-            .checked_sub(padding)?;
-        Some((padding, panel))
-    });
-    let Some((padding, panel)) = room.filter(|&(_, panel)| panel >= MIN_PANEL_COLUMNS) else {
+    let Some(Panel {
+        width: panel,
+        padding,
+    }) = panel
+    else {
         return art.iter().map(|row| art_row(row, 0)).collect();
     };
     let pieces: Vec<Piece> = text.iter().flat_map(|line| wrap(line, panel)).collect();
