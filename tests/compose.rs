@@ -286,10 +286,42 @@ fn piece_of_only_escapes_shows_no_text() {
 }
 
 #[test]
-fn art_row_without_a_reset_is_reset_before_the_padding() {
-    let art = lines(&["\x1b[41m  ", "\x1b[42m  "]);
+fn art_row_with_an_escape_and_no_reset_ends_with_one() {
+    let art = lines(&["\x1b[41m  ", "\x1b[42m  ", "##"]);
+
+    let rows = compose::banner(&art, &lines(&["a"]), 4, Align::Left, Valign::Top, 60);
+    let narrow = compose::banner(&art, &lines(&["a"]), 4, Align::Left, Valign::Top, 10);
+
+    assert_eq!(rows, ["\x1b[41m  \x1b[0m    a", "\x1b[42m  \x1b[0m", "##"]);
+    assert_eq!(narrow, ["\x1b[41m  \x1b[0m", "\x1b[42m  \x1b[0m", "##"]);
+}
+
+#[test]
+fn art_row_without_an_escape_is_shown_as_stored() {
+    let art = lines(&["##", "##"]);
 
     let rows = compose::banner(&art, &lines(&["a"]), 4, Align::Left, Valign::Top, 60);
 
-    assert_eq!(rows, ["\x1b[41m  \x1b[0m    a", "\x1b[42m  "]);
+    assert_eq!(rows, ["##    a", "##"]);
+}
+
+#[test]
+fn reset_restarts_the_style_a_continuation_replays() {
+    let art = art(1);
+    let line = format!("\x1b[1m{}\x1b[0m\x1b[32m{}", "a".repeat(15), "b".repeat(10));
+
+    let rows = compose::banner(&art, &[line], 4, Align::Left, Valign::Top, 34);
+
+    assert_eq!(
+        rows,
+        [
+            format!(
+                "{}    \x1b[1m{}\x1b[0m\x1b[32m{}\x1b[0m",
+                art[0],
+                "a".repeat(15),
+                "b".repeat(5)
+            ),
+            format!("{}\x1b[32m{}\x1b[0m", " ".repeat(14), "b".repeat(5)),
+        ]
+    );
 }

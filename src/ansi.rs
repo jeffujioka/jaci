@@ -117,14 +117,53 @@ fn string_length(text: &str) -> Option<usize> {
 /// Whether `escape` is an SGR sequence, `ESC [`, parameters of digits, `;`
 /// and `:`, then `m`, which sets the style and colours of the text after it.
 pub(crate) fn is_sgr(escape: &str) -> bool {
+    sgr_parameters(escape).is_some()
+}
+
+/// The parameters of `escape` when it is an SGR sequence, such as `1;31` of
+/// `ESC[1;31m`.
+fn sgr_parameters(escape: &str) -> Option<&str> {
     escape
         .strip_prefix(CSI)
         .and_then(|sequence| sequence.strip_suffix('m'))
-        .is_some_and(|parameters| {
+        .filter(|parameters| {
             parameters
                 .bytes()
                 .all(|byte| byte.is_ascii_digit() || byte == b';' || byte == b':')
         })
+}
+
+/// The SGR sequences in effect after the text recorded so far: every one
+/// since the last reset, in order, so replaying them gives the style and
+/// colours the terminal has there.
+#[derive(Debug, Default)]
+pub(crate) struct ActiveSgr(String);
+
+impl ActiveSgr {
+    /// Records `escape` when it is an SGR sequence. One whose first
+    /// parameter is a reset, `ESC[m`, `ESC[0m` or `ESC[0;1m`, ends every
+    /// sequence before it, and leaves nothing to replay when all its
+    /// parameters are resets.
+    pub(crate) fn record(&mut self, escape: &str) {
+        let Some(parameters) = sgr_parameters(escape) else {
+            return;
+        };
+        // An empty parameter, or one of zeros, is 0: the reset.
+        let is_reset = |parameter: &str| parameter.bytes().all(|byte| byte == b'0');
+        let mut parameters = parameters.split(';');
+        if parameters.next().is_some_and(is_reset) {
+            self.0.clear();
+            if parameters.all(is_reset) {
+                return;
+            }
+        }
+        self.0.push_str(escape);
+    }
+
+    /// The recorded sequences, in order.
+    pub(crate) fn as_str(&self) -> &str {
+        &self.0
+    }
 }
 
 /// The length in bytes of the escape that starts `text`, an nF escape with
@@ -179,6 +218,29 @@ mod tests {
         assert!(!is_sgr("\x1b[2J"));
         assert!(!is_sgr("\x1b[?25m"));
         assert!(!is_sgr("\x1b(B"));
+    }
+
+    #[test]
+    fn active_sgr_restarts_after_a_reset() {
+        let mut active = ActiveSgr::default();
+        // Each step's escapes, then the sequences active after them.
+        let steps: [(&[&str], &str); 5] = [
+            (
+                &["\x1b[1m", "\x1b(B", "\x1b[2J", "\x1b[38:2::1:2:3m"],
+                "\x1b[1m\x1b[38:2::1:2:3m",
+            ),
+            (&["\x1b[m"], ""),
+            (&["\x1b[4m", "\x1b[00;0m"], ""),
+            (&["\x1b[4m", "\x1b[0;32m", "\x1b[1m"], "\x1b[0;32m\x1b[1m"),
+            (&["\x1b[;7m"], "\x1b[;7m"),
+        ];
+
+        for (escapes, expected) in steps {
+            for escape in escapes {
+                active.record(escape);
+            }
+            assert_eq!(active.as_str(), expected, "after {escapes:?}");
+        }
     }
 
     #[test]

@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 
 use unicode_width::UnicodeWidthChar;
 
-use crate::ansi::{self, RESET, Token};
+use crate::ansi::{self, ActiveSgr, RESET, Token};
 use crate::cache::Cache;
 use crate::config::{Block, BlockText, Style};
 use crate::named::Named;
@@ -26,11 +26,16 @@ pub const COMMAND_TIME_LIMIT: Duration = Duration::from_secs(3);
 
 const BOLD: &str = "\x1b[1m";
 const DIM: &str = "\x1b[2m";
-/// Command output has a tab stop every this many columns.
+/// Panel text has a tab stop every this many columns.
 const TAB_STOP: usize = 8;
 
 /// The panel lines of `blocks`, in block order: one line per line of each
-/// block's resolved text, carrying the block's style and colour.
+/// block's resolved text, carrying the block's style and colour, then the
+/// SGR sequences of the block's earlier lines since their last reset, so a
+/// colour set on one line of a command's output stays on its later lines.
+/// Trailing lines of command output that hold escapes and no characters,
+/// such as the reset `tput sgr0` prints after a newline, are left out; a
+/// line of literal text always stays.
 ///
 /// Static variables take their values from `cache`, [`UNKNOWN`] when it has
 /// none; each dynamic variable a block uses is read once; any other `{...}`
@@ -38,10 +43,13 @@ const TAB_STOP: usize = 8;
 /// before any is waited on and gets [`COMMAND_TIME_LIMIT`] from its own
 /// start; its value is its stdout less trailing newlines, or [`UNKNOWN`]
 /// when it fails to start, exits non-zero, dies by a signal or runs out of
-/// time. The value keeps its SGR sequences and newlines and has its tabs
-/// expanded to stops every 8 columns of its panel line; its other escape
-/// sequences and control characters, C0, DEL and C1, are removed.
-/// Variables are not replaced inside commands or their output.
+/// time. Variables are not replaced inside commands or their output.
+///
+/// All of a block's text, literal text, variable values and output alike,
+/// keeps its SGR sequences and newlines, and has every tab expanded to the
+/// next stop every 8 columns of its panel line; its other escape sequences
+/// and control characters, C0, DEL and C1, are removed, so no text moves
+/// the cursor over the art.
 pub fn resolve(blocks: &[Block], cache: &Cache) -> Vec<String> {
     let mut commands = Vec::new();
     for block in blocks {
@@ -60,31 +68,19 @@ pub fn resolve(blocks: &[Block], cache: &Cache) -> Vec<String> {
     let mut variables = Variables::new(cache);
     let mut lines = Vec::new();
     for block in blocks {
-        let text = match &block.text {
+        let mut text = PanelText::default();
+        match &block.text {
             BlockText::Content(segments) => {
-                let mut text = String::new();
                 for segment in segments {
                     match segment {
                         Segment::Text(literal) => variables.replace(literal, &mut text),
-                        Segment::Command(_) => push_output(&mut text, &output()),
+                        Segment::Command(_) => text.push(&output(), Source::Output),
                     }
                 }
-                text
             }
-            BlockText::Command(_) => {
-                let mut text = String::new();
-                push_output(&mut text, &output());
-                text
-            }
-        };
-        let prefix = style_prefix(block);
-        lines.extend(text.lines().map(|line| {
-            if prefix.is_empty() {
-                line.to_owned()
-            } else {
-                format!("{prefix}{line}{RESET}")
-            }
-        }));
+            BlockText::Command(_) => text.push(&output(), Source::Output),
+        }
+        text.push_lines(&mut lines, &style_prefix(block));
     }
     lines
 }
@@ -102,35 +98,106 @@ fn style_prefix(block: &Block) -> String {
     prefix
 }
 
-/// Appends the command output `output` to `text`, the panel text so far,
-/// with each tab expanded to spaces up to the next stop of every
-/// [`TAB_STOP`] columns, counted from the start of the line of `text` the
-/// tab lands in. SGR sequences and newlines stay; every other escape
-/// sequence with its body, a lone ESC, and every other control character,
-/// C0, DEL and C1, go, so the output moves no cursor and leaves only text
-/// and colours.
-fn push_output(text: &mut String, output: &str) {
-    let line_start = text.rfind('\n').map_or(0, |index| index + 1);
-    let mut column = ansi::visible_width(&text[line_start..]);
-    for token in ansi::tokens(output) {
-        match token {
-            Token::Escape(escape) if ansi::is_sgr(escape) => text.push_str(escape),
-            Token::Escape(_) => {}
-            Token::Char('\n') => {
-                text.push('\n');
-                column = 0;
-            }
-            Token::Char('\t') => {
-                let spaces = TAB_STOP - column % TAB_STOP;
-                text.extend(iter::repeat_n(' ', spaces));
-                column += spaces;
-            }
-            Token::Char(c) if c.is_control() => {}
-            Token::Char(c) => {
-                text.push(c);
-                column += c.width().unwrap_or(0);
+/// Where a piece of panel text comes from, which decides whether its lines
+/// always stay.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Source {
+    /// A block's literal text or a variable's value.
+    Literal,
+    /// A command's output.
+    Output,
+}
+
+/// A block's resolved text as it is built. SGR sequences and newlines stay,
+/// each tab is expanded to spaces up to the next stop of every [`TAB_STOP`]
+/// columns, counted from the start of the line the tab lands in, and every
+/// other escape sequence with its body, a lone ESC, and every other control
+/// character, C0, DEL and C1, go, so the text moves no cursor and leaves
+/// only characters and colours.
+#[derive(Default)]
+struct PanelText {
+    text: String,
+    /// The display width of the last line of `text`.
+    column: usize,
+    /// The length of `text` up to the end of its last literal piece, less
+    /// the piece's trailing newlines, which end a line without making it
+    /// literal; every byte after it is command output or a newline.
+    literal_end: usize,
+}
+
+impl PanelText {
+    /// Appends `piece`, which comes from `source`.
+    fn push(&mut self, piece: &str, source: Source) {
+        for token in ansi::tokens(piece) {
+            let pushed = match token {
+                Token::Escape(escape) if ansi::is_sgr(escape) => {
+                    self.text.push_str(escape);
+                    true
+                }
+                Token::Char('\n') => {
+                    self.text.push('\n');
+                    self.column = 0;
+                    false
+                }
+                Token::Char('\t') => {
+                    let spaces = TAB_STOP - self.column % TAB_STOP;
+                    self.text.extend(iter::repeat_n(' ', spaces));
+                    self.column += spaces;
+                    true
+                }
+                Token::Char(c) if !c.is_control() => {
+                    self.text.push(c);
+                    self.column += c.width().unwrap_or(0);
+                    true
+                }
+                Token::Escape(_) | Token::Char(_) => false,
+            };
+            if pushed && source == Source::Literal {
+                self.literal_end = self.text.len();
             }
         }
+    }
+
+    /// Appends to `lines` one line per line of the text, as [`str::lines`]
+    /// splits it (the text holds no carriage return), less its trailing
+    /// lines of command output that hold escapes and no characters. Each
+    /// line starts with `prefix`, the block's style, then the SGR sequences
+    /// still active from the lines before it, and ends with a reset when
+    /// `prefix` is not empty.
+    fn push_lines(&self, lines: &mut Vec<String>, prefix: &str) {
+        let mut active = ActiveSgr::default();
+        // How many lines there are up to the last one that stays.
+        let mut shown = lines.len();
+        let mut start = 0;
+        for chunk in self.text.split_inclusive('\n') {
+            let line = chunk.strip_suffix('\n').unwrap_or(chunk);
+            let mut resolved = String::with_capacity(
+                prefix.len() + active.as_str().len() + line.len() + RESET.len(),
+            );
+            resolved.push_str(prefix);
+            resolved.push_str(active.as_str());
+            resolved.push_str(line);
+            if !prefix.is_empty() {
+                resolved.push_str(RESET);
+            }
+            let (mut escapes, mut characters) = (false, false);
+            for token in ansi::tokens(line) {
+                match token {
+                    Token::Escape(escape) => {
+                        active.record(escape);
+                        escapes = true;
+                    }
+                    Token::Char(_) => characters = true,
+                }
+            }
+            lines.push(resolved);
+            let from_output = start >= self.literal_end;
+            if !(from_output && escapes && !characters) {
+                shown = lines.len();
+            }
+            start += chunk.len();
+        }
+        lines.truncate(shown);
     }
 }
 
@@ -152,16 +219,16 @@ impl<'c> Variables<'c> {
 
     /// Appends `literal` to `text` with each placeholder of a variable
     /// replaced by its value; any other placeholder stays as typed.
-    fn replace(&mut self, literal: &str, text: &mut String) {
+    fn replace(&mut self, literal: &str, text: &mut PanelText) {
         let mut copied = 0;
         for placeholder in template::placeholders(literal) {
             if let Some(value) = self.value(placeholder.name) {
-                text.push_str(&literal[copied..placeholder.range.start]);
-                text.push_str(value);
+                text.push(&literal[copied..placeholder.range.start], Source::Literal);
+                text.push(value, Source::Literal);
                 copied = placeholder.range.end;
             }
         }
-        text.push_str(&literal[copied..]);
+        text.push(&literal[copied..], Source::Literal);
     }
 
     /// The value of the variable `name`, `None` when no variable has that
