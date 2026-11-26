@@ -13,7 +13,7 @@ use toml::Spanned;
 use toml::de::{DeString, DeTable, DeValue};
 
 use crate::named::Named;
-use crate::render::{Charset, Mode};
+use crate::render::{AsciiStyle, Charset, Mode};
 use crate::size::{self, DEFAULT_COLUMNS, DEFAULT_RATIO};
 use crate::template::{self, Segment};
 
@@ -61,16 +61,20 @@ pub struct Encode {
     pub width: u32,
     /// Finite and above 0.
     pub ratio: f64,
-    pub charset: Charset,
+    /// How ascii mode picks and colours its characters.
+    pub ascii_style: AsciiStyle,
+    /// The characters ascii mode draws with; `None` is the ascii style's own.
+    pub charset: Option<Charset>,
 }
 
 impl Default for Encode {
     fn default() -> Self {
         Self {
-            mode: Mode::Halfblock,
+            mode: Mode::Ascii,
             width: DEFAULT_COLUMNS,
             ratio: DEFAULT_RATIO,
-            charset: Charset::default(),
+            ascii_style: AsciiStyle::default(),
+            charset: None,
         }
     }
 }
@@ -331,12 +335,14 @@ fn read_encode(table: &DeTable<'_>, encode: &mut Encode) -> Result<(), Invalid> 
     for (key, value) in entries(table) {
         match key.get_ref().as_ref() {
             "mode" => encode.mode = named(value, "encode.mode")?,
+            "ascii_style" => encode.ascii_style = named(value, "encode.ascii_style")?,
             "width" => encode.width = whole_number(value, "encode.width", 1)?,
             "ratio" => encode.ratio = number_above_zero(value, "encode.ratio")?,
             "charset" => {
                 const VALUES: &str = "text of at least one character";
-                encode.charset = Charset::new(text(value, "encode.charset", VALUES)?)
+                let charset = Charset::new(text(value, "encode.charset", VALUES)?)
                     .ok_or_else(|| must_be(value, "encode.charset", VALUES))?;
+                encode.charset = Some(charset);
             }
             _ => return Err(unknown_key(key, "encode")),
         }
