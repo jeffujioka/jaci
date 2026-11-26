@@ -8,7 +8,7 @@ use std::os::unix::fs::symlink;
 
 use common::{Env, HELP_LINE, content_block, read_art, read_cache, stderr, stdout};
 use jaci::config::{Banner, Block, Config, Encode, Text};
-use jaci::render::Mode;
+use jaci::render::{AsciiStyle, Mode};
 use jaci::sysinfo::StaticVariable::{Cpu, Gpu, Hostname, Os};
 
 const IMAGE: &str = "test_fixtures/4x4.png";
@@ -57,12 +57,13 @@ fn commented(text: &str, key: &str) -> bool {
         .any(|pair| pair[0].starts_with('#') && pair[1].starts_with(&setting))
 }
 
-/// Asserts that the written config is the full config with `mode`, `width`
-/// and the text blocks of `contents`, every other key its default.
-fn assert_full_config(env: &Env, mode: Mode, width: u32, contents: &[&str]) {
+/// Asserts that the written config is the full config with `mode`, `style`,
+/// `width` and the text blocks of `contents`, every other key its default.
+fn assert_full_config(env: &Env, mode: Mode, style: AsciiStyle, width: u32, contents: &[&str]) {
     let expected = Config {
         encode: Encode {
             mode,
+            ascii_style: style,
             width,
             ..Encode::default()
         },
@@ -106,7 +107,7 @@ fn init_sets_everything_up() {
     assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
     assert!(output.stdout.is_empty());
     assert!(output.stderr.is_empty());
-    assert_full_config(&env, Mode::Ascii, 80, &FULL_BLOCKS);
+    assert_full_config(&env, Mode::Ascii, AsciiStyle::Bright, 80, &FULL_BLOCKS);
     assert_eq!(read_art(&env.art_path()).columns(), 80);
     let cache = read_cache(&env.cache_path());
     for variable in [Hostname, Os, Cpu, Gpu] {
@@ -189,7 +190,7 @@ fn accepted_overwrite_replaces_config() {
     let output = env.jaci_with_input(&["init", IMAGE], "y\n");
 
     assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
-    assert_full_config(&env, Mode::Ascii, 80, &FULL_BLOCKS);
+    assert_full_config(&env, Mode::Ascii, AsciiStyle::Bright, 80, &FULL_BLOCKS);
 }
 
 #[test]
@@ -208,7 +209,7 @@ fn accepted_overwrite_writes_through_a_symlinked_config() {
     let link = fs::symlink_metadata(env.config_path()).unwrap();
     assert!(link.file_type().is_symlink());
     assert_eq!(fs::read_link(env.config_path()).unwrap(), target);
-    assert_full_config(&env, Mode::Ascii, 80, &FULL_BLOCKS);
+    assert_full_config(&env, Mode::Ascii, AsciiStyle::Bright, 80, &FULL_BLOCKS);
 }
 
 #[test]
@@ -232,7 +233,7 @@ fn dangling_symlinked_config_asks_to_overwrite() {
 fn interactive_init_asks_for_image() {
     let env = Env::new();
 
-    let output = env.jaci_with_input(&["init", "-i"], &format!("{IMAGE}\n{}", "\n".repeat(9)));
+    let output = env.jaci_with_input(&["init", "-i"], &format!("{IMAGE}\n{}", "\n".repeat(10)));
 
     assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
     assert_eq!(
@@ -240,6 +241,7 @@ fn interactive_init_asks_for_image() {
         concat!(
             "Image path: ",
             "Render mode (ascii, halfblock, quadrant, braille) [ascii]: ",
+            "Ascii style (plain, bright, dense, tinted) [bright]: ",
             "Width in columns [80]: ",
             "Show {hostname}? [Y/n]: ",
             "Show {os}? [Y/n]: ",
@@ -250,7 +252,7 @@ fn interactive_init_asks_for_image() {
             "Show {uptime}? [Y/n]: ",
         )
     );
-    assert_full_config(&env, Mode::Ascii, 80, &FULL_BLOCKS);
+    assert_full_config(&env, Mode::Ascii, AsciiStyle::Bright, 80, &FULL_BLOCKS);
     assert_eq!(read_art(&env.art_path()).columns(), 80);
 }
 
@@ -259,7 +261,7 @@ fn image_answer_expands_home() {
     let env = Env::new();
     fs::copy(IMAGE, env.home().join("logo.png")).unwrap();
 
-    let output = env.jaci_with_input(&["init", "-i"], &format!("~/logo.png\n{}", "\n".repeat(9)));
+    let output = env.jaci_with_input(&["init", "-i"], &format!("~/logo.png\n{}", "\n".repeat(10)));
 
     assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
     assert_eq!(read_art(&env.art_path()).columns(), 80);
@@ -277,6 +279,7 @@ fn given_image_skips_image_prompt() {
     assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
     let stdout = stdout(&output);
     assert!(!stdout.contains("Image path: "), "{stdout}");
+    assert!(!stdout.contains("Ascii style"), "{stdout}");
     let text = env.config_text();
     assert!(
         text.lines().any(|line| line == r#"mode = "braille""#),
@@ -286,8 +289,50 @@ fn given_image_skips_image_prompt() {
     assert!(!text.contains("{os}"), "{text}");
     let mut contents = FULL_BLOCKS.to_vec();
     contents.remove(1);
-    assert_full_config(&env, Mode::Braille, 40, &contents);
+    assert_full_config(&env, Mode::Braille, AsciiStyle::Bright, 40, &contents);
     assert_eq!(read_art(&env.art_path()).columns(), 40);
+}
+
+#[test]
+fn interactive_init_asks_the_style_for_ascii() {
+    let env = Env::new();
+
+    let output = env.jaci_with_input(
+        &["init", "-i", IMAGE],
+        &format!("ascii\ntinted\n40\n{}", "\n".repeat(7)),
+    );
+
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert!(
+        stdout(&output).starts_with(concat!(
+            "Render mode (ascii, halfblock, quadrant, braille) [ascii]: ",
+            "Ascii style (plain, bright, dense, tinted) [bright]: ",
+            "Width in columns [80]: ",
+        )),
+        "{}",
+        stdout(&output)
+    );
+    let text = env.config_text();
+    assert!(
+        text.lines().any(|line| line == r#"ascii_style = "tinted""#),
+        "{text}"
+    );
+    assert_full_config(&env, Mode::Ascii, AsciiStyle::Tinted, 40, &FULL_BLOCKS);
+    assert_eq!(read_art(&env.art_path()).columns(), 40);
+}
+
+#[test]
+fn invalid_style_stops_init() {
+    let env = Env::new();
+
+    let output = env.jaci_with_input(&["init", "-i", IMAGE], "ascii\nneon\n");
+
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(
+        stderr(&output),
+        format!("jaci: 'neon' is not a valid ascii style\n{HELP_LINE}\n")
+    );
+    assert!(!env.config_folder().exists());
 }
 
 #[test]
@@ -308,7 +353,7 @@ fn invalid_answer_stops_init() {
 fn missing_image_stops_init_before_the_questions() {
     let env = Env::new();
 
-    let output = env.jaci_with_input(&["init", "-i", "missing.png"], &"\n".repeat(9));
+    let output = env.jaci_with_input(&["init", "-i", "missing.png"], &"\n".repeat(10));
 
     assert_eq!(output.status.code(), Some(1));
     assert_eq!(
