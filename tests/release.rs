@@ -83,13 +83,25 @@ fn tagged_release_builds_three_targets() {
     targets.sort_unstable();
     assert_eq!(targets, RELEASE_TARGETS);
 
-    // The token reaches only the steps that run gh, not the build's
-    // dependencies or the third-party actions.
+    // The token is in the env of the steps that run gh alone, and no
+    // checkout leaves it in `.git/config`, so no build script, proc-macro or
+    // test the build runs can read it. An action can still take it as a
+    // default input of its own.
     assert!(workflow["env"].is_badvalue(), "no workflow-wide env");
     for (name, job) in jobs {
         assert!(job["env"].is_badvalue(), "{name:?}: no job-wide env");
         for step in job["steps"].as_vec().expect("steps") {
             let env = &step["env"];
+            if step["uses"]
+                .as_str()
+                .is_some_and(|uses| uses.starts_with("actions/checkout@"))
+            {
+                assert_eq!(
+                    step["with"]["persist-credentials"].as_bool(),
+                    Some(false),
+                    "{name:?}: the checkout keeps no token"
+                );
+            }
             let runs_gh = step["run"]
                 .as_str()
                 .is_some_and(|run| run.split_whitespace().any(|word| word == "gh"));

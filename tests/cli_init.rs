@@ -4,6 +4,7 @@
 mod common;
 
 use std::fs;
+use std::os::unix::fs::symlink;
 
 use common::{Env, HELP_LINE, content_block, read_art, read_cache, stderr, stdout};
 use jaci::config::{Banner, Block, Config, Encode, Text};
@@ -179,6 +180,42 @@ fn accepted_overwrite_replaces_config() {
 }
 
 #[test]
+fn accepted_overwrite_writes_through_a_symlinked_config() {
+    let env = Env::new();
+    let dotfiles = env.home().join("dotfiles");
+    let target = dotfiles.join("config.toml");
+    fs::create_dir_all(&dotfiles).unwrap();
+    fs::write(&target, "# mine\n").unwrap();
+    fs::create_dir_all(env.config_folder()).unwrap();
+    symlink(&target, env.config_path()).unwrap();
+
+    let output = env.jaci_with_input(&["init", IMAGE], "y\n");
+
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    let link = fs::symlink_metadata(env.config_path()).unwrap();
+    assert!(link.file_type().is_symlink());
+    assert_eq!(fs::read_link(env.config_path()).unwrap(), target);
+    assert_full_config(&env, Mode::Halfblock, 80, &FULL_BLOCKS);
+}
+
+#[test]
+fn dangling_symlinked_config_asks_to_overwrite() {
+    let env = Env::new();
+    fs::create_dir_all(env.config_folder()).unwrap();
+    symlink(env.home().join("dotfiles/config.toml"), env.config_path()).unwrap();
+
+    let output = env.jaci_with_input(&["init", IMAGE], "n\n");
+
+    let path = env.config_path().display().to_string();
+    assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
+    assert_eq!(
+        stdout(&output),
+        format!("{path} already exists. Overwrite it? [y/N] ")
+    );
+    assert!(!env.art_path().exists());
+}
+
+#[test]
 fn interactive_init_asks_for_image() {
     let env = Env::new();
 
@@ -250,6 +287,39 @@ fn invalid_answer_stops_init() {
     assert_eq!(
         stderr(&output),
         format!("jaci: 'sepia' is not a valid render mode\n{HELP_LINE}\n")
+    );
+    assert!(!env.config_folder().exists());
+}
+
+#[test]
+fn missing_image_stops_init_before_the_questions() {
+    let env = Env::new();
+
+    let output = env.jaci_with_input(&["init", "-i", "missing.png"], &"\n".repeat(9));
+
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(
+        stderr(&output),
+        format!("jaci: image not found: missing.png\n{HELP_LINE}\n")
+    );
+    let stdout = stdout(&output);
+    assert!(!stdout.contains("Render mode"), "{stdout}");
+    assert!(!env.config_folder().exists());
+}
+
+#[test]
+fn too_large_width_writes_nothing() {
+    let env = Env::new();
+
+    let output = env.jaci_with_input(
+        &["init", "-i", IMAGE],
+        &format!("halfblock\n20000\n{}", "\n".repeat(7)),
+    );
+
+    assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
+    assert_eq!(
+        stderr(&output),
+        format!("jaci: art of 20000×10000 cells is too large\n{HELP_LINE}\n")
     );
     assert!(!env.config_folder().exists());
 }

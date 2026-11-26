@@ -17,27 +17,37 @@ pub enum Segment {
     Command(String),
 }
 
-/// A `{cmd:` whose opening brace no later `}` balances.
+/// An inline command the template scanner refuses.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct UnclosedCommand;
+pub enum TemplateError {
+    /// A `{cmd:` whose opening brace no later `}` balances.
+    UnclosedCommand,
+    /// A `{cmd:}` holding nothing but whitespace.
+    EmptyCommand,
+}
 
-impl fmt::Display for UnclosedCommand {
+impl fmt::Display for TemplateError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("unclosed {cmd:")
+        f.write_str(match self {
+            Self::UnclosedCommand => "unclosed {cmd:",
+            Self::EmptyCommand => "empty {cmd:}",
+        })
     }
 }
 
-impl Error for UnclosedCommand {}
+impl Error for TemplateError {}
 
 /// Splits `content` into literal text and inline commands. An inline command
 /// ends at the `}` that balances its opening brace, counting every brace, even
 /// one inside quotes, so `{cmd:awk '{print $1}'}` runs `awk '{print $1}'`.
-/// No segment is empty text.
+/// No segment is empty text, and no command is blank (see
+/// [`is_blank_command`]).
 ///
 /// # Errors
 ///
-/// [`UnclosedCommand`] when a `{cmd:` is never balanced.
-pub fn parse(content: &str) -> Result<Vec<Segment>, UnclosedCommand> {
+/// [`TemplateError::UnclosedCommand`] when a `{cmd:` is never balanced, and
+/// [`TemplateError::EmptyCommand`] when a command is blank.
+pub fn parse(content: &str) -> Result<Vec<Segment>, TemplateError> {
     let mut segments = Vec::new();
     let mut rest = content;
     while let Some(start) = rest.find(COMMAND_OPEN) {
@@ -45,7 +55,10 @@ pub fn parse(content: &str) -> Result<Vec<Segment>, UnclosedCommand> {
             segments.push(Segment::Text(rest[..start].to_owned()));
         }
         let command = &rest[start + COMMAND_OPEN.len()..];
-        let end = balancing_brace(command).ok_or(UnclosedCommand)?;
+        let end = balancing_brace(command).ok_or(TemplateError::UnclosedCommand)?;
+        if is_blank_command(&command[..end]) {
+            return Err(TemplateError::EmptyCommand);
+        }
         segments.push(Segment::Command(command[..end].to_owned()));
         rest = &command[end + 1..];
     }
@@ -53,6 +66,12 @@ pub fn parse(content: &str) -> Result<Vec<Segment>, UnclosedCommand> {
         segments.push(Segment::Text(rest.to_owned()));
     }
     Ok(segments)
+}
+
+/// Whether `command` is blank, empty or only whitespace: a `{cmd:...}` and a
+/// block's `command` both refuse one.
+pub fn is_blank_command(command: &str) -> bool {
+    command.trim().is_empty()
 }
 
 /// The byte index in `text` of the `}` that closes a brace opened just before

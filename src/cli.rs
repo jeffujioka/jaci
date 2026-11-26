@@ -4,6 +4,7 @@
 use std::env;
 use std::error::Error;
 use std::fmt;
+use std::fs;
 use std::io::{self, IsTerminal, Write as _};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -13,7 +14,6 @@ use std::time::Duration;
 
 use clap::builder::PossibleValue;
 use clap::{Args, Parser, Subcommand, ValueEnum};
-use image::RgbaImage;
 
 use crate::art_file::{self, ArtFileError};
 use crate::atomic_file;
@@ -24,7 +24,7 @@ use crate::image_input::{self, ImageInputError};
 use crate::init::{self, InitError, Settings};
 use crate::named::Named;
 use crate::render::{self, Charset, Mode};
-use crate::size::{self, Sizing, TooLarge};
+use crate::size::{self, Fit, Sizing, TooLarge};
 use crate::text;
 
 /// Follows every error jaci reports.
@@ -287,18 +287,24 @@ fn run(cli: Cli) -> Result<(), CliError> {
     }
 }
 
-/// Sets jaci up: asks what it has to on stdout and stdin, reads the image,
-/// then writes the config, the art file encoded as `jaci encode` encodes
-/// with the written config, and the cache.
+/// Sets jaci up: asks what it has to on stdout and stdin, reading the image
+/// as soon as its path is known, fits it with the settings the config will
+/// hold, then writes the config, the art file encoded as `jaci encode`
+/// encodes with the written config, and the cache.
 fn init(args: InitArgs, folder: &Path, home: &Path) -> Result<(), CliError> {
     if args.image.is_none() && !args.interactive {
         return Err(InitError::NoImage.into());
     }
     let config_path = folder.join(config::FILE_NAME);
-    let (image_path, settings) = {
+    // Every check runs before any file is written, so an unreadable image, or
+    // one too large for the settings, writes none (D38). The image is read
+    // before the settings are asked, so a wrong path stops init at once.
+    let (image, settings) = {
         let mut input = io::stdin().lock();
         let mut output = io::stdout().lock();
-        if config_path.exists() {
+        // Any entry counts, a dangling symlink too: the write would replace
+        // the file it names.
+        if fs::symlink_metadata(&config_path).is_ok() {
             init::confirm_overwrite(&mut input, &mut output, &config_path)?;
         }
         // Without an image, the check above leaves only interactive init.
@@ -306,15 +312,18 @@ fn init(args: InitArgs, folder: &Path, home: &Path) -> Result<(), CliError> {
             Some(image) => image,
             None => init::ask_image(&mut input, &mut output, home)?,
         };
+        let image = image_input::read(&image_path)?;
         let settings = if args.interactive {
             init::ask_settings(&mut input, &mut output)?
         } else {
             Settings::default()
         };
-        (image_path, settings)
+        (image, settings)
     };
-    // Before any file is written, so an unreadable image writes none (D38).
-    let image = image_input::read(&image_path)?;
+    // `--minimal` leaves the `[encode]` keys out, and as it rules out `-i`
+    // its settings are their defaults.
+    let encode = settings.encode();
+    let fit = size::fit(&image, encode.mode, &config_sizing(&encode))?;
     let art = init::image_value(&folder.join(config::DEFAULT_IMAGE), home)?;
     let text = if args.minimal {
         init::minimal(&art)
@@ -326,13 +335,8 @@ fn init(args: InitArgs, folder: &Path, home: &Path) -> Result<(), CliError> {
         source,
     })?;
     let config = config::load(folder, home)?;
-    encode_image(
-        &image,
-        config.encode.mode,
-        &config_sizing(&config.encode),
-        &config.encode.charset,
-        &config.banner.image,
-    )?;
+    debug_assert_eq!(config.encode, encode, "the config holds the settings");
+    write_art(&fit, encode.mode, &encode.charset, &config.banner.image)?;
     Ok(cache::refresh(&config, &folder.join(cache::FILE_NAME))?)
 }
 
@@ -404,10 +408,11 @@ fn encode(args: &EncodeArgs, config: &Config) -> Result<(), CliError> {
         ratio: args.ratio,
         ..config_sizing(&config.encode)
     };
-    encode_image(
-        &image,
-        args.mode.unwrap_or(config.encode.mode),
-        &sizing,
+    let mode = args.mode.unwrap_or(config.encode.mode);
+    let fit = size::fit(&image, mode, &sizing)?;
+    write_art(
+        &fit,
+        mode,
         args.charset.as_ref().unwrap_or(&config.encode.charset),
         args.output.as_deref().unwrap_or(&config.banner.image),
     )
@@ -422,16 +427,9 @@ fn config_sizing(encode: &Encode) -> Sizing {
     }
 }
 
-/// Fits `image` to art in `mode`, renders it, ascii with `charset`, and
-/// writes the art file at `path`.
-fn encode_image(
-    image: &RgbaImage,
-    mode: Mode,
-    sizing: &Sizing,
-    charset: &Charset,
-    path: &Path,
-) -> Result<(), CliError> {
-    let fit = size::fit(image, mode, sizing)?;
+/// Renders `fit`, fitted in `mode`, ascii with `charset`, and writes the art
+/// file at `path`.
+fn write_art(fit: &Fit<'_>, mode: Mode, charset: &Charset, path: &Path) -> Result<(), CliError> {
     let rows = match mode {
         Mode::Halfblock => render::halfblock(&fit.image),
         Mode::Ascii => render::ascii(&fit.image, charset),

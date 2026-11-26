@@ -214,3 +214,16 @@ fn dynamic_variables_need_no_external_program() {
         assert!(!value.is_empty() && value != "unknown", "{panel:?}");
     }
 }
+
+#[test]
+fn command_colour_ends_with_its_line() {
+    const RED: &str = r#"{cmd:printf "\033[41mRED"}"#;
+    for literal in ["", "x"] {
+        let env = set_up(&config_with(&[&format!("{literal}{RED}")]));
+
+        let run = env.banner(&["banner"]);
+
+        let text = format!("{literal}\x1b[41mRED\x1b[0m");
+        assert_shown(&run, &beside(Path::new(HALFBLOCK), &text));
+    }
+}

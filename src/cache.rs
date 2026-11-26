@@ -158,7 +158,7 @@ pub fn used_variables(config: &Config) -> Vec<StaticVariable> {
 }
 
 /// Resolves the static variables that `config` uses and writes exactly
-/// those to the cache file at `path`, as [`write`] does.
+/// those to the cache file at `path`, as [`write()`] does.
 ///
 /// # Errors
 ///
