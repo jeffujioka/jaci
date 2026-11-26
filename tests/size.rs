@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+
 use image::imageops::{self, FilterType};
 use image::{Rgba, Rgba32FImage, RgbaImage};
 use jaci::render::Mode;
@@ -462,4 +464,73 @@ fn opaque_gradient_with_hard_edge_keeps_lanczos_sharpness() {
             off.len()
         );
     }
+}
+
+/// A 64×64 image, its left half `left` and its right half `right`.
+fn halves(left: Rgba<u8>, right: Rgba<u8>) -> RgbaImage {
+    RgbaImage::from_fn(64, 64, |x, _| if x < 32 { left } else { right })
+}
+
+/// `image` resampled to 32×16 pixels as art of 16 quadrant columns, and the
+/// same grid through halfblock (32 columns of 1×2 cells at ratio 0.25),
+/// which never sharpens.
+fn quadrant_and_plain(image: &RgbaImage) -> (RgbaImage, RgbaImage) {
+    let quadrant = Sizing {
+        width: Some(16),
+        ..Sizing::default()
+    };
+    let plain = Sizing {
+        width: Some(32),
+        ratio: Some(0.25),
+        ..Sizing::default()
+    };
+    let quadrant = size::fit(image, Mode::Quadrant, &quadrant).unwrap();
+    let plain = size::fit(image, Mode::Halfblock, &plain).unwrap();
+    assert_eq!(quadrant.image.dimensions(), (32, 16));
+    assert_eq!(plain.image.dimensions(), (32, 16));
+    (quadrant.image.into_owned(), plain.image.into_owned())
+}
+
+#[test]
+fn quadrant_sharpens_an_opaque_resampled_image() {
+    let image = halves(Rgba([100, 100, 100, 255]), Rgba([150, 150, 150, 255]));
+
+    let (quadrant, plain) = quadrant_and_plain(&image);
+
+    assert_eq!(quadrant, imageops::unsharpen(&plain, 1.0, 2));
+    assert_ne!(quadrant, plain);
+}
+
+#[test]
+fn quadrant_leaves_an_image_with_transparency_unsharpened() {
+    let image = halves(Rgba([100, 100, 100, 255]), Rgba([0, 0, 0, 0]));
+
+    let (quadrant, plain) = quadrant_and_plain(&image);
+
+    assert_eq!(quadrant, plain);
+}
+
+#[test]
+fn quadrant_uses_an_image_at_its_size_unchanged() {
+    // 16 columns at ratio 1 is 16×8 cells of 2×2 pixels: the image's own 32×16.
+    let image = RgbaImage::from_fn(32, 16, |x, _| Rgba([(x * 8) as u8, 0, 0, 255]));
+    let sizing = Sizing {
+        width: Some(16),
+        ratio: Some(1.0),
+        ..Sizing::default()
+    };
+
+    let fit = size::fit(&image, Mode::Quadrant, &sizing).unwrap();
+
+    assert!(matches!(fit.image, Cow::Borrowed(_)));
+}
+
+#[test]
+fn quadrant_full_width_is_half_the_pixels() {
+    let sizing = Sizing {
+        full: true,
+        ..Sizing::default()
+    };
+
+    assert_eq!(cells(&image(200, 100), Mode::Quadrant, &sizing), (100, 25));
 }
