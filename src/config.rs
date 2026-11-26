@@ -17,10 +17,13 @@ use crate::size::{self, DEFAULT_COLUMNS, DEFAULT_RATIO};
 use crate::template::{self, Segment};
 
 const FOLDER_NAME: &str = "jaci";
-const FILE_NAME: &str = "config.toml";
-const DEFAULT_IMAGE: &str = "art.ansi";
-const DEFAULT_PADDING: u32 = 4;
-const HOME_PREFIX: &str = "~/";
+/// The config file's name in the config folder.
+pub const FILE_NAME: &str = "config.toml";
+/// The default art file's name in the config folder.
+pub const DEFAULT_IMAGE: &str = "art.ansi";
+pub(crate) const DEFAULT_PADDING: u32 = 4;
+/// The start of a `[banner].image` that names the home folder.
+pub(crate) const HOME_PREFIX: &str = "~/";
 
 /// The config folder: `<xdg_config_home>/jaci` when `XDG_CONFIG_HOME` is set
 /// and not empty, else `<home>/.config/jaci`.
@@ -91,6 +94,20 @@ pub enum Align {
     Right,
 }
 
+impl Align {
+    /// Every alignment, in the order the messages list them.
+    pub const ALL: [Self; 3] = [Self::Left, Self::Center, Self::Right];
+
+    /// The name the config gives the alignment.
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Left => "left",
+            Self::Center => "center",
+            Self::Right => "right",
+        }
+    }
+}
+
 /// `banner.text.valign`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum Valign {
@@ -98,6 +115,20 @@ pub enum Valign {
     Top,
     Center,
     Bottom,
+}
+
+impl Valign {
+    /// Every vertical alignment, in the order the messages list them.
+    pub const ALL: [Self; 3] = [Self::Top, Self::Center, Self::Bottom];
+
+    /// The name the config gives the vertical alignment.
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Top => "top",
+            Self::Center => "center",
+            Self::Bottom => "bottom",
+        }
+    }
 }
 
 /// One `[[banner.text.blocks]]` entry.
@@ -125,6 +156,20 @@ pub enum Style {
     Normal,
     Bold,
     Dim,
+}
+
+impl Style {
+    /// Every style, in the order the messages list them.
+    pub const ALL: [Self; 3] = [Self::Normal, Self::Bold, Self::Dim];
+
+    /// The name the config gives the style.
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Normal => "normal",
+            Self::Bold => "bold",
+            Self::Dim => "dim",
+        }
+    }
 }
 
 /// Why the config could not be loaded. Every message reads
@@ -324,22 +369,14 @@ fn read_text(table: &DeTable<'_>, text: &mut Text) -> Result<(), Invalid> {
                 text.align = one_of(
                     value,
                     "banner.text.align",
-                    &[
-                        ("left", Align::Left),
-                        ("center", Align::Center),
-                        ("right", Align::Right),
-                    ],
+                    &Align::ALL.map(|align| (align.name(), align)),
                 )?;
             }
             "valign" => {
                 text.valign = one_of(
                     value,
                     "banner.text.valign",
-                    &[
-                        ("top", Valign::Top),
-                        ("center", Valign::Center),
-                        ("bottom", Valign::Bottom),
-                    ],
+                    &Valign::ALL.map(|valign| (valign.name(), valign)),
                 )?;
             }
             "blocks" => {
@@ -381,15 +418,7 @@ fn read_block(value: &Value<'_>, number: usize) -> Result<Block, Invalid> {
                 command = Some(BlockText::Command(text.to_owned()));
             }
             "style" => {
-                style = one_of(
-                    value,
-                    &name,
-                    &[
-                        ("normal", Style::Normal),
-                        ("bold", Style::Bold),
-                        ("dim", Style::Dim),
-                    ],
-                )?;
+                style = one_of(value, &name, &Style::ALL.map(|style| (style.name(), style)))?;
             }
             "color" => color = Some(colour(value, &name)?),
             _ => return Err(unknown_key(key, &scope)),

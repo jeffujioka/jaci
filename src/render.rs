@@ -13,7 +13,7 @@ use image::RgbaImage;
 const RESET: &str = "\x1b[0m";
 const FOREGROUND: u8 = 38;
 const BACKGROUND: u8 = 48;
-const DEFAULT_CHARSET: &str = " .:-=+*#%@";
+pub(crate) const DEFAULT_CHARSET: &str = " .:-=+*#%@";
 const BRAILLE_BLANK: u32 = 0x2800;
 /// Each braille dot as its pixel's offset in the 2×4 cell and its bit:
 /// dots 1, 2, 3, 7 down the left column, 4, 5, 6, 8 down the right.

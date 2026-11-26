@@ -6,11 +6,10 @@ use std::collections::BTreeMap;
 use std::error::Error;
 use std::fmt;
 use std::fs;
-use std::io::{self, Write as _};
+use std::io;
 use std::path::{Path, PathBuf};
 
-use tempfile::NamedTempFile;
-
+use crate::atomic_file;
 use crate::config::{BlockText, Config};
 use crate::sysinfo::StaticVariable;
 use crate::template::{self, Segment};
@@ -120,25 +119,13 @@ pub fn read(path: &Path) -> Result<Option<Cache>, CacheError> {
 ///
 /// [`CacheError::Write`] when a folder or the file cannot be written.
 pub fn write(path: &Path, cache: &Cache) -> Result<(), CacheError> {
-    replace(path, cache).map_err(|source| CacheError::Write {
-        path: path.to_path_buf(),
-        source,
-    })
-}
-
-/// Writes `cache` to a temporary file beside `path`, then renames it to
-/// `path`.
-fn replace(path: &Path, cache: &Cache) -> io::Result<()> {
-    let text = toml::to_string(&cache.values).map_err(io::Error::other)?;
-    let folder = path
-        .parent()
-        .filter(|folder| !folder.as_os_str().is_empty())
-        .unwrap_or(Path::new("."));
-    fs::create_dir_all(folder)?;
-    let mut file = NamedTempFile::new_in(folder)?;
-    file.write_all(text.as_bytes())?;
-    file.persist(path)?;
-    Ok(())
+    toml::to_string(&cache.values)
+        .map_err(io::Error::other)
+        .and_then(|text| atomic_file::write(path, text.as_bytes()))
+        .map_err(|source| CacheError::Write {
+            path: path.to_path_buf(),
+            source,
+        })
 }
 
 /// The static variables that the config's text blocks use, in the order of
