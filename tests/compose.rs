@@ -222,3 +222,74 @@ fn empty_text_line_adds_no_trailing_spaces() {
         ]
     );
 }
+
+#[test]
+fn colour_set_mid_line_carries_to_every_later_piece() {
+    let art = art(1);
+    let line = format!(
+        "\x1b[1m{}\x1b[31m{}\x1b[32m{}\x1b[0m",
+        "a".repeat(15),
+        "b".repeat(10),
+        "c".repeat(20)
+    );
+
+    let rows = compose::banner(&art, &[line], 4, Align::Left, Valign::Top, 34);
+
+    let indent = " ".repeat(14);
+    assert_eq!(
+        rows,
+        [
+            format!(
+                "{}    \x1b[1m{}\x1b[31m{}\x1b[0m",
+                art[0],
+                "a".repeat(15),
+                "b".repeat(5)
+            ),
+            format!(
+                "{indent}\x1b[1m\x1b[31m{}\x1b[32m{}\x1b[0m",
+                "b".repeat(5),
+                "c".repeat(15)
+            ),
+            format!("{indent}\x1b[1m\x1b[31m\x1b[32m{}\x1b[0m", "c".repeat(5)),
+        ]
+    );
+}
+
+#[test]
+fn unstyled_line_with_a_colour_ends_with_a_reset() {
+    let art = art(2);
+    let line = format!("{}\x1b[41m{}", "a".repeat(15), "b".repeat(10));
+
+    let rows = compose::banner(&art, &[line], 4, Align::Left, Valign::Top, 34);
+
+    assert_eq!(
+        rows,
+        [
+            format!(
+                "{}    {}\x1b[41m{}\x1b[0m",
+                art[0],
+                "a".repeat(15),
+                "b".repeat(5)
+            ),
+            format!("{}    \x1b[41m{}\x1b[0m", art[1], "b".repeat(5)),
+        ]
+    );
+}
+
+#[test]
+fn piece_of_only_escapes_shows_no_text() {
+    let art = art(1);
+
+    let rows = compose::banner(&art, &lines(&["\x1b[41m"]), 4, Align::Left, Valign::Top, 34);
+
+    assert_eq!(rows, [art[0].clone()]);
+}
+
+#[test]
+fn art_row_without_a_reset_is_reset_before_the_padding() {
+    let art = lines(&["\x1b[41m  ", "\x1b[42m  "]);
+
+    let rows = compose::banner(&art, &lines(&["a"]), 4, Align::Left, Valign::Top, 60);
+
+    assert_eq!(rows, ["\x1b[41m  \x1b[0m    a", "\x1b[42m  "]);
+}

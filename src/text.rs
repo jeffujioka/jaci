@@ -4,6 +4,7 @@
 //! Layout, the panel's width, wrapping and alignment, is the compositor's.
 
 use std::io::{self, Read as _};
+use std::iter;
 use std::mem::MaybeUninit;
 use std::os::unix::process::CommandExt as _;
 use std::process::{Child, ChildStdout, Command, Stdio};
@@ -11,7 +12,9 @@ use std::sync::mpsc::{self, RecvTimeoutError, Sender};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crate::ansi::{self, RESET};
+use unicode_width::UnicodeWidthChar;
+
+use crate::ansi::{self, RESET, Token};
 use crate::cache::Cache;
 use crate::config::{Block, BlockText, Style};
 use crate::named::Named;
@@ -23,6 +26,8 @@ pub const COMMAND_TIME_LIMIT: Duration = Duration::from_secs(3);
 
 const BOLD: &str = "\x1b[1m";
 const DIM: &str = "\x1b[2m";
+/// Command output has a tab stop every this many columns.
+const TAB_STOP: usize = 8;
 
 /// The panel lines of `blocks`, in block order: one line per line of each
 /// block's resolved text, carrying the block's style and colour.
@@ -33,7 +38,10 @@ const DIM: &str = "\x1b[2m";
 /// before any is waited on and gets [`COMMAND_TIME_LIMIT`] from its own
 /// start; its value is its stdout less trailing newlines, or [`UNKNOWN`]
 /// when it fails to start, exits non-zero, dies by a signal or runs out of
-/// time. Variables are not replaced inside commands or their output.
+/// time. The value keeps its SGR sequences and newlines and has its tabs
+/// expanded to stops every 8 columns of its panel line; its other escape
+/// sequences and control characters, C0, DEL and C1, are removed.
+/// Variables are not replaced inside commands or their output.
 pub fn resolve(blocks: &[Block], cache: &Cache) -> Vec<String> {
     let mut commands = Vec::new();
     for block in blocks {
@@ -58,12 +66,16 @@ pub fn resolve(blocks: &[Block], cache: &Cache) -> Vec<String> {
                 for segment in segments {
                     match segment {
                         Segment::Text(literal) => variables.replace(literal, &mut text),
-                        Segment::Command(_) => text.push_str(&output()),
+                        Segment::Command(_) => push_output(&mut text, &output()),
                     }
                 }
                 text
             }
-            BlockText::Command(_) => output(),
+            BlockText::Command(_) => {
+                let mut text = String::new();
+                push_output(&mut text, &output());
+                text
+            }
         };
         let prefix = style_prefix(block);
         lines.extend(text.lines().map(|line| {
@@ -88,6 +100,38 @@ fn style_prefix(block: &Block) -> String {
         ansi::push_foreground(&mut prefix, colour);
     }
     prefix
+}
+
+/// Appends the command output `output` to `text`, the panel text so far,
+/// with each tab expanded to spaces up to the next stop of every
+/// [`TAB_STOP`] columns, counted from the start of the line of `text` the
+/// tab lands in. SGR sequences and newlines stay; every other escape
+/// sequence with its body, a lone ESC, and every other control character,
+/// C0, DEL and C1, go, so the output moves no cursor and leaves only text
+/// and colours.
+fn push_output(text: &mut String, output: &str) {
+    let line_start = text.rfind('\n').map_or(0, |index| index + 1);
+    let mut column = ansi::visible_width(&text[line_start..]);
+    for token in ansi::tokens(output) {
+        match token {
+            Token::Escape(escape) if ansi::is_sgr(escape) => text.push_str(escape),
+            Token::Escape(_) => {}
+            Token::Char('\n') => {
+                text.push('\n');
+                column = 0;
+            }
+            Token::Char('\t') => {
+                let spaces = TAB_STOP - column % TAB_STOP;
+                text.extend(iter::repeat_n(' ', spaces));
+                column += spaces;
+            }
+            Token::Char(c) if c.is_control() => {}
+            Token::Char(c) => {
+                text.push(c);
+                column += c.width().unwrap_or(0);
+            }
+        }
+    }
 }
 
 /// The values of the variables of one [`resolve`] call.

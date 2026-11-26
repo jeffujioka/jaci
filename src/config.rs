@@ -152,7 +152,7 @@ pub struct Block {
 pub enum BlockText {
     /// `content`, split into literal text and inline commands.
     Content(Vec<Segment>),
-    /// `command`, never empty.
+    /// `command`, never blank (see [`template::is_blank_command`]).
     Command(String),
 }
 
@@ -251,7 +251,8 @@ impl Error for ConfigError {
 /// [`ConfigError::Read`] when the file exists but cannot be read,
 /// [`ConfigError::Syntax`] when it is not TOML and [`ConfigError::Invalid`]
 /// for an unknown key, a value the key does not allow, a text block without
-/// exactly one of `content` and `command`, or an unclosed `{cmd:`.
+/// exactly one of `content` and `command`, an unclosed or blank `{cmd:`, or a
+/// blank `command`; blank is empty or only whitespace.
 pub fn load(folder: &Path, home: &Path) -> Result<Config, ConfigError> {
     let path = folder.join(FILE_NAME);
     let mut config = Config {
@@ -393,13 +394,15 @@ fn read_block(value: &Value<'_>, number: usize) -> Result<Block, Invalid> {
         match key.get_ref().as_ref() {
             "content" => {
                 let text = text(value, &name, "text with variables and {cmd:...}")?;
-                let segments = template::parse(text).map_err(|unclosed| {
-                    Invalid::at(value.span(), format!("{name} has an {unclosed}"))
-                })?;
+                let segments = template::parse(text)
+                    .map_err(|error| Invalid::at(value.span(), format!("{name} has an {error}")))?;
                 content = Some(BlockText::Content(segments));
             }
             "command" => {
-                let text = non_empty_text(value, &name, "a shell command")?;
+                let text = text(value, &name, "a shell command")?;
+                if template::is_blank_command(text) {
+                    return Err(must_be(value, &name, "a shell command"));
+                }
                 command = Some(BlockText::Command(text.to_owned()));
             }
             "style" => style = named(value, &name)?,

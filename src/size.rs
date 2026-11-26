@@ -14,11 +14,22 @@ pub(crate) const DEFAULT_COLUMNS: u32 = 80;
 pub(crate) const DEFAULT_RATIO: f64 = 0.5;
 /// Lanczos3 keeps photos sharp when they shrink to a few dozen cells.
 const FILTER: FilterType = FilterType::Lanczos3;
-/// The lowest alpha a resampled pixel keeps: below it, the pixel is
-/// transparent, so the filter's ringing past a shape's edge draws no cells.
-const MIN_RESAMPLED_ALPHA: u8 = 128;
-/// The most pixels a fitted image may hold: 2^25, an `f32` RGBA buffer of
-/// 512 MiB while it is resampled.
+/// Decides which resampled pixels are transparent, and colours those where
+/// [`FILTER`]'s alpha falls below its own and short of opaque: its kernel is
+/// never negative, so it rings no alpha past a shape's edge, mixes no colour
+/// the source lacks, and every source pixel whose weighted alpha rounds to
+/// at least 1 reaches the output pixels around it.
+const SMOOTH_FILTER: FilterType = FilterType::Triangle;
+/// How far, relative to [`SMOOTH_FILTER`]'s alpha, [`FILTER`]'s alpha may sit
+/// below it and still count as equal: the two filters' weights sum to 1 in
+/// different float rounding, so a uniform alpha comes out a few `f32` steps
+/// apart from each.
+const ALPHA_TOLERANCE: f32 = 1e-5;
+/// The most pixels a fitted image may hold: 2^25. It bounds the output grid
+/// only, 512 MiB for each of the resample's two `f32` RGBA results; the
+/// source's premultiplied `f32` copy and the intermediate buffers of
+/// `imageops::resize` (source width × target height) grow with the source
+/// and are not bounded by it.
 const MAX_PIXELS: u32 = 1 << 25;
 
 /// Whether `ratio` is a valid character width ÷ height: finite and above 0.
@@ -128,11 +139,24 @@ pub fn fit<'a>(image: &'a RgbaImage, mode: Mode, sizing: &Sizing) -> Result<Fit<
     })
 }
 
-/// `image` resized to `width` × `height` with its colour premultiplied by
-/// alpha, as `imageops::resize` assumes, so the hidden colour of transparent
-/// pixels never bleeds into their neighbours. A pixel that comes out with
-/// alpha below [`MIN_RESAMPLED_ALPHA`] is transparent black; every other
-/// keeps its colour and alpha.
+/// `image` resized to `width` × `height`, its colour premultiplied by alpha,
+/// as `imageops::resize` assumes, so the hidden colour of transparent pixels
+/// never bleeds into their neighbours. The image is resized twice, with
+/// [`FILTER`] and with [`SMOOTH_FILTER`]. A pixel whose [`SMOOTH_FILTER`]
+/// alpha rounds to 0 is transparent black, so [`FILTER`]'s ringing past a
+/// shape's edge draws no cells. A pixel whose [`FILTER`] alpha is below its
+/// [`SMOOTH_FILTER`] alpha by more than [`ALPHA_TOLERANCE`] of it and rounds
+/// below 255, the side of an edge where [`FILTER`] undershoots, takes its
+/// colour and alpha from [`SMOOTH_FILTER`]: there [`FILTER`]'s alpha is small
+/// or not above 0, so dividing by it would push the colour beside an outline
+/// past every source colour, or leave it black. [`SMOOTH_FILTER`]'s colour is
+/// a mix of the source's own colours, and its pixel stays opaque to the
+/// render (D28) however translucent or thin its source. Every other pixel
+/// keeps [`FILTER`]'s sharper colour and alpha: where [`FILTER`] matches,
+/// up to float rounding, or overshoots, as in a uniformly translucent image,
+/// and where its alpha rounds to 255, as in an opaque image, whose resampled
+/// alphas sit on or a float rounding step below 1 and whose colour that
+/// alpha cannot distort.
 fn resample(image: &RgbaImage, width: u32, height: u32) -> RgbaImage {
     let premultiplied = image
         .as_raw()
@@ -144,20 +168,31 @@ fn resample(image: &RgbaImage, width: u32, height: u32) -> RgbaImage {
         .collect();
     let premultiplied = Rgba32FImage::from_raw(image.width(), image.height(), premultiplied)
         .expect("the buffer holds four channels per pixel");
-    let resized = imageops::resize(&premultiplied, width, height, FILTER);
-    let straight = resized
+    let sharp = imageops::resize(&premultiplied, width, height, FILTER);
+    let smooth = imageops::resize(&premultiplied, width, height, SMOOTH_FILTER);
+    let straight = sharp
         .as_raw()
         .chunks_exact(4)
-        .flat_map(|pixel| {
-            let (alpha, a) = (byte(pixel[3]), pixel[3]);
-            if alpha < MIN_RESAMPLED_ALPHA {
+        .zip(smooth.as_raw().chunks_exact(4))
+        .flat_map(|(sharp, smooth)| {
+            if byte(smooth[3]) == 0 {
                 return [0; 4];
             }
+            // Above 0 either way: `smooth` is at least the half that rounds
+            // to a byte of 1, and `sharp` is kept only when at least that,
+            // less a float rounding step, or when it rounds to 255.
+            let undershoots = sharp[3] < smooth[3] * (1.0 - ALPHA_TOLERANCE);
+            let pixel = if undershoots && byte(sharp[3]) < 255 {
+                smooth
+            } else {
+                sharp
+            };
+            let a = pixel[3];
             [
                 byte(pixel[0] / a),
                 byte(pixel[1] / a),
                 byte(pixel[2] / a),
-                alpha,
+                byte(a),
             ]
         })
         .collect();

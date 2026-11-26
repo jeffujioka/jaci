@@ -195,6 +195,42 @@ fn unclosed_inline_command_refused() {
 }
 
 #[test]
+fn empty_inline_command_refused() {
+    for content in ["IP: {cmd:} up", "{cmd: \t }"] {
+        let (path, message) = load_error(&format!(
+            "[[banner.text.blocks]]\ncontent = \"{content}\"\n"
+        ));
+
+        assert_eq!(
+            message,
+            format!(
+                "jaci: config {}: line 2: banner.text.blocks[1].content has an empty {{cmd:}}",
+                path.display()
+            ),
+            "{content:?}"
+        );
+    }
+}
+
+#[test]
+fn blank_block_command_refused() {
+    for command in ["", " \t "] {
+        let (path, message) = load_error(&format!(
+            "[[banner.text.blocks]]\ncommand = \"{command}\"\n"
+        ));
+
+        assert_eq!(
+            message,
+            format!(
+                "jaci: config {}: line 2: banner.text.blocks[1].command must be a shell command",
+                path.display()
+            ),
+            "{command:?}"
+        );
+    }
+}
+
+#[test]
 fn image_path_expands_home() {
     let (_folder, _path, config) = load("[banner]\nimage = \"~/art.ansi\"\n");
 

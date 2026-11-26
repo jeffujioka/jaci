@@ -6,9 +6,9 @@ use std::time::{Duration, Instant};
 
 use common::{content_block, read_cache};
 use jaci::cache::{self, Cache};
-use jaci::config::{Block, BlockText, Style};
+use jaci::config::{Align, Block, BlockText, Style, Valign};
 use jaci::sysinfo::StaticVariable::Hostname;
-use jaci::text;
+use jaci::{compose, text};
 use tempfile::TempDir;
 
 /// A normal block without colour whose `command` is `command`.
@@ -201,4 +201,84 @@ fn plain_block_has_no_escapes() {
     let lines = text::resolve(&[content_block("hi")], &Cache::default());
 
     assert_eq!(lines, ["hi"]);
+}
+
+#[test]
+fn command_output_keeps_its_colours() {
+    let lines = text::resolve(
+        &[command(r"printf '\033[1;31mr\033[mx\033[0m'")],
+        &Cache::default(),
+    );
+
+    assert_eq!(lines, ["\x1b[1;31mr\x1b[mx\x1b[0m"]);
+}
+
+#[test]
+fn tabs_in_command_output_expand_to_8_column_stops() {
+    let blocks = [
+        content_block(r"x{cmd:printf 'a\tb'}y"),
+        command(r"printf 'a\tb\n日\tc\n\td'"),
+    ];
+
+    let lines = text::resolve(&blocks, &Cache::default());
+
+    assert_eq!(
+        lines,
+        [
+            format!("xa{}by", " ".repeat(6)),
+            format!("a{}b", " ".repeat(7)),
+            format!("日{}c", " ".repeat(6)),
+            format!("{}d", " ".repeat(8)),
+        ]
+    );
+    let art = vec!["#".repeat(10)];
+    let rows = compose::banner(&art, &lines[..1], 4, Align::Right, Valign::Top, 34);
+    assert_eq!(
+        rows,
+        [format!(
+            "{}\x1b[0m    {}{}",
+            art[0],
+            " ".repeat(10),
+            lines[0]
+        )]
+    );
+}
+
+#[test]
+fn command_output_controls_and_other_escapes_are_removed() {
+    let output = [
+        r"a\rb",
+        r"\033[2Jc",
+        r"\033]0;x\007d",
+        r"\033]0;y\033\\e",
+        r"\033(Bf\033",
+        r"7g\001\010\177h\033",
+    ]
+    .concat();
+
+    let lines = text::resolve(&[command(&format!("printf '{output}'"))], &Cache::default());
+
+    assert_eq!(lines, ["abcdefgh"]);
+}
+
+#[test]
+fn command_output_c1_controls_and_control_strings_are_removed() {
+    let output = [
+        // C1 controls: U+0085, U+009B and U+009F.
+        r"a\302\205b\302\233c\302\237",
+        // DCS, SOS, PM and APC strings, ended by ST or BEL.
+        r"d\033Pq#0;1\033\\e",
+        r"\033Xsos\007f",
+        r"\033^pm\033\\g",
+        r"\033_apc\007h",
+        // Two-character escapes.
+        r"\0337i\033cj\033=k\0338",
+        // A control string to the end of the output.
+        r"l\033Pnever ended",
+    ]
+    .concat();
+
+    let lines = text::resolve(&[command(&format!("printf '{output}'"))], &Cache::default());
+
+    assert_eq!(lines, ["abcdefghijkl"]);
 }

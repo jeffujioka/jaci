@@ -53,6 +53,18 @@ impl Default for Settings {
     }
 }
 
+impl Settings {
+    /// The `[encode]` keys a config written with these settings holds: their
+    /// mode and width, every other key its default.
+    pub fn encode(&self) -> Encode {
+        Encode {
+            mode: self.mode,
+            width: self.width,
+            ..Encode::default()
+        }
+    }
+}
+
 /// Why init stopped.
 #[derive(Debug)]
 pub enum InitError {
@@ -142,7 +154,7 @@ fn toml_value(value: impl Into<toml::Value>) -> String {
 /// block for each variable `settings` shows, and commented-out examples of
 /// the other block keys.
 pub fn full(image: &str, settings: &Settings) -> String {
-    let encode = Encode::default();
+    let encode = settings.encode();
     let mut blocks = String::new();
     let shown = block_contents()
         .zip(settings.shown)
@@ -205,8 +217,8 @@ valign = {valign}
 # color = {color_example}
 ",
         modes = Mode::one_of(),
-        mode = toml_value(settings.mode.name()),
-        width = toml_value(i64::from(settings.width)),
+        mode = toml_value(encode.mode.name()),
+        width = toml_value(i64::from(encode.width)),
         ratio = toml_value(encode.ratio),
         charset = toml_value(DEFAULT_CHARSET),
         image = toml_value(image),
