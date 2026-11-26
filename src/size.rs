@@ -31,6 +31,11 @@ const ALPHA_TOLERANCE: f32 = 1e-5;
 /// `imageops::resize` (source width × target height) grow with the source
 /// and are not bounded by it.
 const MAX_PIXELS: u32 = 1 << 25;
+/// The blur radius of the unsharp mask [`fit`] applies in quadrant mode.
+const SHARPEN_SIGMA: f32 = 1.0;
+/// The least difference between a channel and its blurred value, of 255,
+/// that the unsharp mask amplifies.
+const SHARPEN_THRESHOLD: i32 = 2;
 
 /// Whether `ratio` is a valid character width ÷ height: finite and above 0.
 pub fn valid_ratio(ratio: f64) -> bool {
@@ -91,7 +96,12 @@ impl Error for TooLarge {}
 /// Fits `image` to art in `mode`. The columns come from the first of
 /// `--full`, `--auto`, `-w`, `-s`, `[encode].width`, then 80; the rows are
 /// round(columns × height ÷ width × ratio), at least 1, with the ratio from
-/// `--ratio`, else `[encode].ratio`, else 0.5.
+/// `--ratio`, else `[encode].ratio`, else 0.5. An image that already has the
+/// art's pixel grid is used as it is; any other is resampled to it, and in
+/// quadrant mode a resampled image whose every pixel is opaque is then
+/// sharpened with an unsharp mask. An image with any transparency is not
+/// sharpened: that would smear the hidden colour of its transparent pixels
+/// into the edges.
 ///
 /// # Errors
 ///
@@ -130,13 +140,23 @@ pub fn fit<'a>(image: &'a RgbaImage, mode: Mode, sizing: &Sizing) -> Result<Fit<
     let image = if image.dimensions() == target {
         Cow::Borrowed(image)
     } else {
-        Cow::Owned(resample(image, target.0, target.1))
+        let resampled = resample(image, target.0, target.1);
+        Cow::Owned(if mode == Mode::Quadrant && opaque(&resampled) {
+            imageops::unsharpen(&resampled, SHARPEN_SIGMA, SHARPEN_THRESHOLD)
+        } else {
+            resampled
+        })
     };
     Ok(Fit {
         columns,
         rows,
         image,
     })
+}
+
+/// Whether every pixel of `image` has alpha 255.
+fn opaque(image: &RgbaImage) -> bool {
+    image.pixels().all(|pixel| pixel.0[3] == u8::MAX)
 }
 
 /// `image` resized to `width` × `height`, its colour premultiplied by alpha,
