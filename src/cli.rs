@@ -65,8 +65,8 @@ struct InitArgs {
     /// full, commented config.
     #[arg(long, conflicts_with = "interactive")]
     minimal: bool,
-    /// Ask for the image when not given, the render mode, the width and
-    /// which variables to show.
+    /// Ask for the image when not given, the render mode, the ascii style
+    /// when that mode is ascii, the width and which variables to show.
     #[arg(short, long)]
     interactive: bool,
 }
