@@ -437,8 +437,9 @@ fn config_sizing(encode: &Encode) -> Sizing {
 /// file at `path`.
 fn write_art(fit: &Fit<'_>, mode: Mode, charset: &Charset, path: &Path) -> Result<(), CliError> {
     let rows = match mode {
-        Mode::Halfblock => render::halfblock(&fit.image),
         Mode::Ascii => render::ascii(&fit.image, AsciiStyle::Plain, charset),
+        Mode::Halfblock => render::halfblock(&fit.image),
+        Mode::Quadrant => render::quadrant(&fit.image),
         Mode::Braille => render::braille(&fit.image),
     };
     art_file::write(path, &rows).map_err(|source| CliError::Write {
