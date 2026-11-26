@@ -24,7 +24,16 @@ const FULL_BLOCKS: [&str; 7] = [
 ];
 /// The keys the full config writes, each with a comment line above it.
 const COMMENTED_KEYS: [&str; 10] = [
-    "mode", "width", "ratio", "charset", "image", "padding", "align", "valign", "content", "style",
+    "mode",
+    "ascii_style",
+    "width",
+    "ratio",
+    "image",
+    "padding",
+    "align",
+    "valign",
+    "content",
+    "style",
 ];
 const NO_IMAGE: &str = "Which image should jaci use? Run 'jaci init <image>' to get started.";
 
@@ -73,6 +82,10 @@ fn assert_full_config(env: &Env, mode: Mode, width: u32, contents: &[&str]) {
     }
     let comments: Vec<&str> = text.lines().filter(|line| line.starts_with('#')).collect();
     assert!(
+        comments.iter().any(|line| line.starts_with("# charset = ")),
+        "no commented-out charset:\n{text}"
+    );
+    assert!(
         comments
             .iter()
             .any(|line| line.contains("content = ") && line.contains("{cmd:")),
@@ -93,7 +106,7 @@ fn init_sets_everything_up() {
     assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
     assert!(output.stdout.is_empty());
     assert!(output.stderr.is_empty());
-    assert_full_config(&env, Mode::Halfblock, 80, &FULL_BLOCKS);
+    assert_full_config(&env, Mode::Ascii, 80, &FULL_BLOCKS);
     assert_eq!(read_art(&env.art_path()).columns(), 80);
     let cache = read_cache(&env.cache_path());
     for variable in [Hostname, Os, Cpu, Gpu] {
@@ -176,7 +189,7 @@ fn accepted_overwrite_replaces_config() {
     let output = env.jaci_with_input(&["init", IMAGE], "y\n");
 
     assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
-    assert_full_config(&env, Mode::Halfblock, 80, &FULL_BLOCKS);
+    assert_full_config(&env, Mode::Ascii, 80, &FULL_BLOCKS);
 }
 
 #[test]
@@ -195,7 +208,7 @@ fn accepted_overwrite_writes_through_a_symlinked_config() {
     let link = fs::symlink_metadata(env.config_path()).unwrap();
     assert!(link.file_type().is_symlink());
     assert_eq!(fs::read_link(env.config_path()).unwrap(), target);
-    assert_full_config(&env, Mode::Halfblock, 80, &FULL_BLOCKS);
+    assert_full_config(&env, Mode::Ascii, 80, &FULL_BLOCKS);
 }
 
 #[test]
@@ -226,7 +239,7 @@ fn interactive_init_asks_for_image() {
         stdout(&output),
         concat!(
             "Image path: ",
-            "Render mode (ascii, halfblock, quadrant, braille) [halfblock]: ",
+            "Render mode (ascii, halfblock, quadrant, braille) [ascii]: ",
             "Width in columns [80]: ",
             "Show {hostname}? [Y/n]: ",
             "Show {os}? [Y/n]: ",
@@ -237,7 +250,7 @@ fn interactive_init_asks_for_image() {
             "Show {uptime}? [Y/n]: ",
         )
     );
-    assert_full_config(&env, Mode::Halfblock, 80, &FULL_BLOCKS);
+    assert_full_config(&env, Mode::Ascii, 80, &FULL_BLOCKS);
     assert_eq!(read_art(&env.art_path()).columns(), 80);
 }
 

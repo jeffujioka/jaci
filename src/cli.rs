@@ -91,9 +91,13 @@ struct EncodeArgs {
     /// <config folder>/art.ansi].
     #[arg(short, long, value_name = "FILE")]
     output: Option<PathBuf>,
-    /// The render mode [default: [encode].mode, else halfblock].
+    /// The render mode [default: [encode].mode, else ascii].
     #[arg(short, long)]
     mode: Option<Mode>,
+    /// How ascii mode picks and colours its characters [default:
+    /// [encode].ascii_style, else bright].
+    #[arg(long, value_name = "STYLE")]
+    ascii_style: Option<AsciiStyle>,
     /// The art's width in columns [default: [encode].width, else 80].
     #[arg(
         short,
@@ -121,12 +125,22 @@ struct EncodeArgs {
     #[arg(long, value_parser = parse_ratio)]
     ratio: Option<f64>,
     /// The ascii mode characters, darkest first [default: [encode].charset,
-    /// else " .:-=+*#%@"].
+    /// else the ascii style's own].
     #[arg(long, value_parser = parse_charset)]
     charset: Option<Charset>,
 }
 
 impl ValueEnum for Mode {
+    fn value_variants<'a>() -> &'a [Self] {
+        Self::ALL
+    }
+
+    fn to_possible_value(&self) -> Option<PossibleValue> {
+        Some(PossibleValue::new(self.name()))
+    }
+}
+
+impl ValueEnum for AsciiStyle {
     fn value_variants<'a>() -> &'a [Self] {
         Self::ALL
     }
@@ -336,7 +350,13 @@ fn init(args: InitArgs, folder: &Path, home: &Path) -> Result<(), CliError> {
     })?;
     let config = config::load(folder, home)?;
     debug_assert_eq!(config.encode, encode, "the config holds the settings");
-    write_art(&fit, encode.mode, &encode.charset, &config.banner.image)?;
+    write_art(
+        &fit,
+        encode.mode,
+        encode.ascii_style,
+        encode.charset.as_ref(),
+        &config.banner.image,
+    )?;
     Ok(cache::refresh(&config, &folder.join(cache::FILE_NAME))?)
 }
 
@@ -419,7 +439,8 @@ fn encode(args: &EncodeArgs, config: &Config) -> Result<(), CliError> {
     write_art(
         &fit,
         mode,
-        args.charset.as_ref().unwrap_or(&config.encode.charset),
+        args.ascii_style.unwrap_or(config.encode.ascii_style),
+        args.charset.as_ref().or(config.encode.charset.as_ref()),
         args.output.as_deref().unwrap_or(&config.banner.image),
     )
 }
@@ -433,11 +454,20 @@ fn config_sizing(encode: &Encode) -> Sizing {
     }
 }
 
-/// Renders `fit`, fitted in `mode`, ascii with `charset`, and writes the art
-/// file at `path`.
-fn write_art(fit: &Fit<'_>, mode: Mode, charset: &Charset, path: &Path) -> Result<(), CliError> {
+/// Renders `fit`, fitted in `mode`, and writes the art file at `path`. Ascii
+/// is drawn in `style` with `charset`, or without one with the style's own.
+fn write_art(
+    fit: &Fit<'_>,
+    mode: Mode,
+    style: AsciiStyle,
+    charset: Option<&Charset>,
+    path: &Path,
+) -> Result<(), CliError> {
     let rows = match mode {
-        Mode::Ascii => render::ascii(&fit.image, AsciiStyle::Plain, charset),
+        Mode::Ascii => match charset {
+            Some(charset) => render::ascii(&fit.image, style, charset),
+            None => render::ascii(&fit.image, style, &style.charset()),
+        },
         Mode::Halfblock => render::halfblock(&fit.image),
         Mode::Quadrant => render::quadrant(&fit.image),
         Mode::Braille => render::braille(&fit.image),

@@ -211,7 +211,18 @@ fn art_too_large_is_refused() {
 fn options_pick_mode_and_ratio() {
     let env = Env::new();
 
-    let output = env.jaci(&["encode", "-m", "ascii", "--ratio", "1", "-w", "4", IMAGE]);
+    let output = env.jaci(&[
+        "encode",
+        "-m",
+        "ascii",
+        "--ascii-style",
+        "plain",
+        "--ratio",
+        "1",
+        "-w",
+        "4",
+        IMAGE,
+    ]);
 
     assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
     assert_eq!(read(&env.art_path()), read(Path::new(ASCII_GOLDEN)));
@@ -219,7 +230,8 @@ fn options_pick_mode_and_ratio() {
 
 #[test]
 fn config_picks_mode_and_ratio() {
-    let env = Env::with_config("[encode]\nmode = 'ascii'\nratio = 1\nwidth = 4\n");
+    let env =
+        Env::with_config("[encode]\nmode = 'ascii'\nascii_style = 'plain'\nratio = 1\nwidth = 4\n");
 
     let output = env.jaci(&["encode", IMAGE]);
 
@@ -242,6 +254,101 @@ fn charset_from_config_then_option() {
             "{glyphs:?}"
         );
     }
+}
+
+fn golden(name: &str) -> String {
+    read(
+        &Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("test_fixtures")
+            .join(name),
+    )
+}
+
+#[test]
+fn default_is_bright_ascii() {
+    let env = Env::new();
+
+    // 4 columns at ratio 1 is the fixture's own 4×4 pixels, unresampled.
+    let output = env.jaci(&["encode", "--ratio", "1", "-w", "4", IMAGE]);
+
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert_eq!(read(&env.art_path()), golden("4x4-ascii-bright.ansi"));
+}
+
+#[test]
+fn ascii_style_from_config_then_option() {
+    let env = Env::with_config("[encode]\nascii_style = 'tinted'\nratio = 1\nwidth = 4\n");
+
+    for (args, name) in [
+        (&[][..], "4x4-ascii-tinted.ansi"),
+        (&["--ascii-style", "dense"][..], "4x4-ascii-dense.ansi"),
+    ] {
+        let output = env.jaci(&[&["encode"], args, &[IMAGE]].concat());
+
+        assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+        assert_eq!(read(&env.art_path()), golden(name));
+    }
+}
+
+#[test]
+fn charset_beats_the_dense_style() {
+    for (config, args) in [
+        ("", &["--ascii-style", "dense", "--charset", "#"][..]),
+        ("[encode]\ncharset = '#'\n", &["--ascii-style", "dense"][..]),
+    ] {
+        let env = Env::with_config(config);
+
+        let output = env.jaci(&[&["encode"], args, &[IMAGE]].concat());
+
+        assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+        let glyphs = visible(&read(&env.art_path()));
+        assert!(glyphs.contains('#'), "{glyphs:?}");
+        assert!(
+            glyphs.chars().all(|c| ['#', ' ', '\n'].contains(&c)),
+            "{glyphs:?}"
+        );
+    }
+}
+
+#[test]
+fn ascii_style_is_ignored_outside_ascii() {
+    let env = Env::new();
+
+    // 4 columns at ratio 0.5 is 4×2 halfblock cells: the fixture unresampled.
+    let output = env.jaci(&[
+        "encode",
+        "-m",
+        "halfblock",
+        "--ascii-style",
+        "tinted",
+        "-w",
+        "4",
+        IMAGE,
+    ]);
+
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert_eq!(read(&env.art_path()), golden("4x4-halfblock.ansi"));
+}
+
+#[test]
+fn quadrant_mode_from_the_option() {
+    let env = Env::new();
+
+    // 2 columns at ratio 1 is 2×2 quadrant cells: the fixture unresampled.
+    let output = env.jaci(&["encode", "-m", "quadrant", "--ratio", "1", "-w", "2", IMAGE]);
+
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert_eq!(read(&env.art_path()), golden("4x4-quadrant.ansi"));
+}
+
+#[test]
+fn unknown_ascii_style_is_a_usage_error() {
+    let env = Env::new();
+
+    let output = env.jaci(&["encode", "--ascii-style", "neon", IMAGE]);
+
+    assert_eq!(output.status.code(), Some(2));
+    assert!(!env.art_path().exists());
 }
 
 fn read(path: &Path) -> String {
