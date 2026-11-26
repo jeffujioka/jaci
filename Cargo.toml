@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.87"
 description = "Encode images into 24-bit colour ANSI art and show them as a shell-startup banner"
+license = "MIT"
 repository = "https://github.com/jeffujioka/jaci"
 
 [dependencies]

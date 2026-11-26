@@ -141,6 +141,14 @@ fn tagged_release_builds_three_targets() {
         "a job after every build publishes the release"
     );
 
+    // The archives hold the repo root's licence (below).
+    assert!(
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("LICENSE")
+            .is_file(),
+        "a LICENSE at the repo root"
+    );
+
     for entry in matrix {
         let target = entry["target"].as_str().unwrap();
         let configs = steps(build, entry);
@@ -203,10 +211,16 @@ fn tagged_release_builds_three_targets() {
             assert!(tested < built, "{target}: tested before it is built");
         }
 
+        // The binary and, beside it, the licence it is released under.
         let archive = format!("jaci-${{{{ github.ref_name }}}}-{target}.tar.gz");
         let packaged = step(
-            &|step| step.starts_with(&format!("tar -czf {archive} ")),
-            "the archive",
+            &|step| {
+                step == format!(
+                    "tar -czf {archive} -C target/{target}/release jaci \
+                     -C \"$GITHUB_WORKSPACE\" LICENSE"
+                )
+            },
+            "the archive of the binary and LICENSE",
         );
         let uploaded = step(
             &|step| {
