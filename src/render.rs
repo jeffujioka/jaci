@@ -11,7 +11,11 @@ use image::RgbaImage;
 use crate::ansi::{self, RESET};
 use crate::named::Named;
 
-pub(crate) const DEFAULT_CHARSET: &str = " .:-=+*#%@";
+mod ascii;
+
+pub(crate) use ascii::DEFAULT_CHARSET;
+pub use ascii::{AsciiStyle, Charset, ascii};
+
 const BRAILLE_BLANK: u32 = 0x2800;
 /// Each braille dot as its pixel's offset in the 2×4 cell and its bit:
 /// dots 1, 2, 3, 7 down the left column, 4, 5, 6, 8 down the right.
@@ -64,35 +68,6 @@ impl Mode {
     }
 }
 
-/// The characters ascii mode picks from, darkest first; never empty.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Charset(Vec<char>);
-
-impl Charset {
-    /// The charset of `text`'s characters, or `None` when `text` is empty.
-    pub fn new(text: &str) -> Option<Self> {
-        let chars: Vec<char> = text.chars().collect();
-        (!chars.is_empty()).then_some(Self(chars))
-    }
-
-    /// The character at index ⌊L × n ÷ 256⌋, with L = 0.299R + 0.587G +
-    /// 0.114B and n the charset length, computed exactly in integers as
-    /// ⌊(299R + 587G + 114B) × n ÷ 256 000⌋ so no boundary rounds down.
-    fn pick(&self, [r, g, b]: Rgb) -> char {
-        let luminance_thousandths = 299 * u64::from(r) + 587 * u64::from(g) + 114 * u64::from(b);
-        // L is at most 255, below 256, so the index stays below n.
-        let index = luminance_thousandths * self.0.len() as u64 / 256_000;
-        self.0[usize::try_from(index).expect("the index is below the charset length")]
-    }
-}
-
-impl Default for Charset {
-    /// ` .:-=+*#%@`
-    fn default() -> Self {
-        Self(DEFAULT_CHARSET.chars().collect())
-    }
-}
-
 /// Renders `image` with one cell per two stacked pixels: the upper half block
 /// in the top pixel's colour over the bottom pixel's as background, or the
 /// one half block whose pixel is opaque.
@@ -108,17 +83,6 @@ pub fn halfblock(image: &RgbaImage) -> Vec<String> {
             (Some(top), None) => push_cell(row, top, '▀'),
             (None, Some(bottom)) => push_cell(row, bottom, '▄'),
             (None, None) => row.push(' '),
-        }
-    })
-}
-
-/// Renders `image` with one cell per pixel: the `charset` character its
-/// luminance picks, in its colour.
-pub fn ascii(image: &RgbaImage, charset: &Charset) -> Vec<String> {
-    render_cells(image, Mode::Ascii.cell_size(), |row, x, y| {
-        match opaque(image, x, y) {
-            Some(colour) => push_cell(row, colour, charset.pick(colour)),
-            None => row.push(' '),
         }
     })
 }

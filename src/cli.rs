@@ -23,7 +23,7 @@ use crate::config::{self, Config, ConfigError, Encode};
 use crate::image_input::{self, ImageInputError};
 use crate::init::{self, InitError, Settings};
 use crate::named::Named;
-use crate::render::{self, Charset, Mode};
+use crate::render::{self, AsciiStyle, Charset, Mode};
 use crate::size::{self, Fit, Sizing, TooLarge};
 use crate::text;
 
@@ -438,7 +438,7 @@ fn config_sizing(encode: &Encode) -> Sizing {
 fn write_art(fit: &Fit<'_>, mode: Mode, charset: &Charset, path: &Path) -> Result<(), CliError> {
     let rows = match mode {
         Mode::Halfblock => render::halfblock(&fit.image),
-        Mode::Ascii => render::ascii(&fit.image, charset),
+        Mode::Ascii => render::ascii(&fit.image, AsciiStyle::Plain, charset),
         Mode::Braille => render::braille(&fit.image),
     };
     art_file::write(path, &rows).map_err(|source| CliError::Write {
