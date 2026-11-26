@@ -43,6 +43,18 @@ pub enum Mode {
 }
 
 impl Mode {
+    /// Every mode, in the order the help and the messages list them.
+    pub const ALL: [Self; 3] = [Self::Halfblock, Self::Ascii, Self::Braille];
+
+    /// The name the option and the config give the mode.
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Halfblock => "halfblock",
+            Self::Ascii => "ascii",
+            Self::Braille => "braille",
+        }
+    }
+
     /// The width and height in pixels of one character cell.
     pub const fn cell_size(self) -> (u32, u32) {
         match self {
@@ -177,4 +189,16 @@ fn push_cell(row: &mut String, colour: Rgb, glyph: char) {
 /// or 48 for the background.
 fn push_colour(row: &mut String, layer: u8, [r, g, b]: Rgb) {
     write!(row, "\x1b[{layer};2;{r};{g};{b}m").expect("writing to a String cannot fail");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_mode_has_its_name() {
+        let names = Mode::ALL.map(Mode::name);
+
+        assert_eq!(names, ["halfblock", "ascii", "braille"]);
+    }
 }
