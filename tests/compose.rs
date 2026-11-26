@@ -1,8 +1,15 @@
-use jaci::compose;
+mod common;
+
+use common::banner;
+use jaci::compose::{self, Panel};
 use jaci::config::{Align, Valign};
 
-/// `count` art rows, each 10 columns wide: five cells of two half blocks in a
-/// 24-bit colour, ending in a reset, so the width skips real escapes.
+/// The width of every [`art`] row.
+const ART_COLUMNS: usize = 10;
+
+/// `count` art rows, each [`ART_COLUMNS`] wide: five cells of two half
+/// blocks in a 24-bit colour, ending in a reset, so the width skips real
+/// escapes.
 fn art(count: usize) -> Vec<String> {
     (0..count)
         .map(|row| {
@@ -23,7 +30,15 @@ fn lines(lines: &[&str]) -> Vec<String> {
 fn text_sits_beside_art() {
     let art = art(3);
 
-    let rows = compose::banner(&art, &lines(&["a", "b"]), 4, Align::Left, Valign::Top, 60);
+    let rows = banner(
+        &art,
+        ART_COLUMNS,
+        &lines(&["a", "b"]),
+        4,
+        Align::Left,
+        Valign::Top,
+        60,
+    );
 
     assert_eq!(
         rows,
@@ -39,17 +54,38 @@ fn text_sits_beside_art() {
 fn narrow_terminal_shows_art_only() {
     let art = art(2);
 
-    let rows = compose::banner(&art, &lines(&["a"]), 4, Align::Left, Valign::Top, 33);
+    let rows = banner(
+        &art,
+        ART_COLUMNS,
+        &lines(&["a"]),
+        4,
+        Align::Left,
+        Valign::Top,
+        33,
+    );
 
     assert_eq!(rows, art);
+}
+
+#[test]
+fn panel_is_whats_left_and_at_least_20_columns() {
+    let width = |art_columns, padding, terminal_width| {
+        compose::panel_width(art_columns, padding, terminal_width).map(Panel::width)
+    };
+    assert_eq!(width(10, 4, 34), Some(20));
+    assert_eq!(width(10, 4, 100), Some(86));
+    assert_eq!(width(10, 4, 33), None);
+    assert_eq!(width(10, 4, 0), None);
+    assert_eq!(width(10, u32::MAX, 100), None);
 }
 
 #[test]
 fn text_taller_than_art_continues_below() {
     let art = art(1);
 
-    let rows = compose::banner(
+    let rows = banner(
         &art,
+        ART_COLUMNS,
         &lines(&["a", "b", "c"]),
         4,
         Align::Left,
@@ -72,7 +108,7 @@ fn long_line_wraps_inside_panel() {
     let art = art(2);
     let line = "x".repeat(25);
 
-    let rows = compose::banner(&art, &[line], 4, Align::Left, Valign::Top, 34);
+    let rows = banner(&art, ART_COLUMNS, &[line], 4, Align::Left, Valign::Top, 34);
 
     assert_eq!(
         rows,
@@ -88,7 +124,7 @@ fn wide_characters_count_by_display_width() {
     let art = art(2);
     let line = "日".repeat(12);
 
-    let rows = compose::banner(&art, &[line], 4, Align::Left, Valign::Top, 34);
+    let rows = banner(&art, ART_COLUMNS, &[line], 4, Align::Left, Valign::Top, 34);
 
     assert_eq!(
         rows,
@@ -103,7 +139,15 @@ fn wide_characters_count_by_display_width() {
 fn right_alignment() {
     let art = art(1);
 
-    let rows = compose::banner(&art, &lines(&["abc"]), 4, Align::Right, Valign::Top, 34);
+    let rows = banner(
+        &art,
+        ART_COLUMNS,
+        &lines(&["abc"]),
+        4,
+        Align::Right,
+        Valign::Top,
+        34,
+    );
 
     assert_eq!(rows, [format!("{}    {}abc", art[0], " ".repeat(17))]);
 }
@@ -112,7 +156,15 @@ fn right_alignment() {
 fn centre_alignment() {
     let art = art(1);
 
-    let rows = compose::banner(&art, &lines(&["abc"]), 4, Align::Center, Valign::Top, 34);
+    let rows = banner(
+        &art,
+        ART_COLUMNS,
+        &lines(&["abc"]),
+        4,
+        Align::Center,
+        Valign::Top,
+        34,
+    );
 
     assert_eq!(rows, [format!("{}    {}abc", art[0], " ".repeat(8))]);
 }
@@ -121,7 +173,15 @@ fn centre_alignment() {
 fn bottom_alignment() {
     let art = art(4);
 
-    let rows = compose::banner(&art, &lines(&["a"]), 4, Align::Left, Valign::Bottom, 60);
+    let rows = banner(
+        &art,
+        ART_COLUMNS,
+        &lines(&["a"]),
+        4,
+        Align::Left,
+        Valign::Bottom,
+        60,
+    );
 
     assert_eq!(
         rows,
@@ -138,8 +198,9 @@ fn bottom_alignment() {
 fn middle_alignment() {
     let art = art(5);
 
-    let rows = compose::banner(
+    let rows = banner(
         &art,
+        ART_COLUMNS,
         &lines(&["a", "b"]),
         4,
         Align::Left,
@@ -164,7 +225,7 @@ fn wrapped_styled_line_keeps_its_style_on_every_piece() {
     let art = art(1);
     let line = format!("\x1b[1m\x1b[38;2;1;2;3m{}\x1b[0m", "y".repeat(25));
 
-    let rows = compose::banner(&art, &[line], 4, Align::Right, Valign::Top, 34);
+    let rows = banner(&art, ART_COLUMNS, &[line], 4, Align::Right, Valign::Top, 34);
 
     assert_eq!(
         rows,
@@ -189,7 +250,7 @@ fn wide_character_that_does_not_fit_moves_to_next_row_whole() {
     let line = "日".repeat(11);
 
     // A panel of 21 columns holds 10 wide characters and one free column.
-    let rows = compose::banner(&art, &[line], 4, Align::Left, Valign::Top, 35);
+    let rows = banner(&art, ART_COLUMNS, &[line], 4, Align::Left, Valign::Top, 35);
 
     assert_eq!(
         rows,
@@ -204,8 +265,9 @@ fn wide_character_that_does_not_fit_moves_to_next_row_whole() {
 fn empty_text_line_adds_no_trailing_spaces() {
     let art = art(2);
 
-    let rows = compose::banner(
+    let rows = banner(
         &art,
+        ART_COLUMNS,
         &lines(&["", "", "b"]),
         4,
         Align::Center,
@@ -233,7 +295,7 @@ fn colour_set_mid_line_carries_to_every_later_piece() {
         "c".repeat(20)
     );
 
-    let rows = compose::banner(&art, &[line], 4, Align::Left, Valign::Top, 34);
+    let rows = banner(&art, ART_COLUMNS, &[line], 4, Align::Left, Valign::Top, 34);
 
     let indent = " ".repeat(14);
     assert_eq!(
@@ -260,7 +322,7 @@ fn unstyled_line_with_a_colour_ends_with_a_reset() {
     let art = art(2);
     let line = format!("{}\x1b[41m{}", "a".repeat(15), "b".repeat(10));
 
-    let rows = compose::banner(&art, &[line], 4, Align::Left, Valign::Top, 34);
+    let rows = banner(&art, ART_COLUMNS, &[line], 4, Align::Left, Valign::Top, 34);
 
     assert_eq!(
         rows,
@@ -280,7 +342,15 @@ fn unstyled_line_with_a_colour_ends_with_a_reset() {
 fn piece_of_only_escapes_shows_no_text() {
     let art = art(1);
 
-    let rows = compose::banner(&art, &lines(&["\x1b[41m"]), 4, Align::Left, Valign::Top, 34);
+    let rows = banner(
+        &art,
+        ART_COLUMNS,
+        &lines(&["\x1b[41m"]),
+        4,
+        Align::Left,
+        Valign::Top,
+        34,
+    );
 
     assert_eq!(rows, [art[0].clone()]);
 }
@@ -289,8 +359,8 @@ fn piece_of_only_escapes_shows_no_text() {
 fn art_row_with_an_escape_and_no_reset_ends_with_one() {
     let art = lines(&["\x1b[41m  ", "\x1b[42m  ", "##"]);
 
-    let rows = compose::banner(&art, &lines(&["a"]), 4, Align::Left, Valign::Top, 60);
-    let narrow = compose::banner(&art, &lines(&["a"]), 4, Align::Left, Valign::Top, 10);
+    let rows = banner(&art, 2, &lines(&["a"]), 4, Align::Left, Valign::Top, 60);
+    let narrow = banner(&art, 2, &lines(&["a"]), 4, Align::Left, Valign::Top, 10);
 
     assert_eq!(rows, ["\x1b[41m  \x1b[0m    a", "\x1b[42m  \x1b[0m", "##"]);
     assert_eq!(narrow, ["\x1b[41m  \x1b[0m", "\x1b[42m  \x1b[0m", "##"]);
@@ -300,7 +370,7 @@ fn art_row_with_an_escape_and_no_reset_ends_with_one() {
 fn art_row_without_an_escape_is_shown_as_stored() {
     let art = lines(&["##", "##"]);
 
-    let rows = compose::banner(&art, &lines(&["a"]), 4, Align::Left, Valign::Top, 60);
+    let rows = banner(&art, 2, &lines(&["a"]), 4, Align::Left, Valign::Top, 60);
 
     assert_eq!(rows, ["##    a", "##"]);
 }
@@ -310,7 +380,7 @@ fn reset_restarts_the_style_a_continuation_replays() {
     let art = art(1);
     let line = format!("\x1b[1m{}\x1b[0m\x1b[32m{}", "a".repeat(15), "b".repeat(10));
 
-    let rows = compose::banner(&art, &[line], 4, Align::Left, Valign::Top, 34);
+    let rows = banner(&art, ART_COLUMNS, &[line], 4, Align::Left, Valign::Top, 34);
 
     assert_eq!(
         rows,

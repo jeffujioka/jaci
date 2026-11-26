@@ -366,17 +366,23 @@ fn banner(args: &BannerArgs, config: &Config, folder: &Path) -> Result<(), CliEr
         return Err(CliError::NoCache);
     }
     let text = &config.banner.text;
-    let lines = text::resolve(&text.blocks, &cache);
     // The terminal jaci runs in: stdout, which the check above found to be
     // one. Without a size to read the art shows alone.
     let width = terminal_size::terminal_size().map_or(0, |(columns, _rows)| columns.0.into());
+    let panel = compose::panel_width(art.columns(), config.banner.padding, width);
+    // With no panel to show the text in, no block resolves and so no
+    // command runs.
+    let lines = match panel {
+        Some(_) => text::resolve(&text.blocks, &cache),
+        None => Vec::new(),
+    };
     let rows = compose::banner(
         art.rows(),
+        art.columns(),
         &lines,
-        config.banner.padding,
+        panel,
         text.align,
         text.valign,
-        width,
     );
     let mut output = String::new();
     for row in rows {

@@ -4,11 +4,11 @@ use std::path::Path;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use common::{content_block, read_cache};
+use common::{banner, content_block, read_cache};
 use jaci::cache::{self, Cache};
 use jaci::config::{Align, Block, BlockText, Style, Valign};
 use jaci::sysinfo::StaticVariable::Hostname;
-use jaci::{compose, text};
+use jaci::text;
 use tempfile::TempDir;
 
 /// A normal block without colour whose `command` is `command`.
@@ -232,7 +232,7 @@ fn tabs_in_command_output_expand_to_8_column_stops() {
         ]
     );
     let art = vec!["#".repeat(10)];
-    let rows = compose::banner(&art, &lines[..1], 4, Align::Right, Valign::Top, 34);
+    let rows = banner(&art, 10, &lines[..1], 4, Align::Right, Valign::Top, 34);
     assert_eq!(
         rows,
         [format!("{}    {}{}", art[0], " ".repeat(10), lines[0])]
@@ -275,7 +275,7 @@ fn literal_controls_and_other_escapes_are_removed() {
 
     assert_eq!(lines, ["ab", "cdef", "x\x1b[31my"]);
     let art = vec!["#".repeat(10)];
-    let rows = compose::banner(&art, &lines[2..], 4, Align::Left, Valign::Top, 34);
+    let rows = banner(&art, 10, &lines[2..], 4, Align::Left, Valign::Top, 34);
     assert_eq!(rows, [format!("{}    x\x1b[31my\x1b[0m", art[0])]);
 }
 
@@ -332,7 +332,7 @@ fn colour_carries_across_the_lines_of_one_block() {
 
     assert_eq!(lines, ["\x1b[36ma", "\x1b[36mb", "c"]);
     let art = vec!["\x1b[41m  \x1b[0m".to_owned(); 2];
-    let rows = compose::banner(&art, &lines[..2], 4, Align::Left, Valign::Top, 30);
+    let rows = banner(&art, 2, &lines[..2], 4, Align::Left, Valign::Top, 30);
     assert_eq!(
         rows,
         [
