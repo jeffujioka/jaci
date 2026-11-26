@@ -235,13 +235,15 @@ fn tabs_in_command_output_expand_to_8_column_stops() {
     let rows = compose::banner(&art, &lines[..1], 4, Align::Right, Valign::Top, 34);
     assert_eq!(
         rows,
-        [format!(
-            "{}\x1b[0m    {}{}",
-            art[0],
-            " ".repeat(10),
-            lines[0]
-        )]
+        [format!("{}    {}{}", art[0], " ".repeat(10), lines[0])]
     );
+}
+
+#[test]
+fn carriage_return_ending_literal_content_is_dropped() {
+    let lines = text::resolve(&[content_block("a\r")], &Cache::default());
+
+    assert_eq!(lines, ["a"]);
 }
 
 #[test]
@@ -259,6 +261,22 @@ fn command_output_controls_and_other_escapes_are_removed() {
     let lines = text::resolve(&[command(&format!("printf '{output}'"))], &Cache::default());
 
     assert_eq!(lines, ["abcdefgh"]);
+}
+
+#[test]
+fn literal_controls_and_other_escapes_are_removed() {
+    let blocks = [
+        content_block("a\rb"),
+        content_block("\x1b[2Jc\u{8}d\u{7f}\u{9b}e\x1b]0;t\x07f"),
+        content_block("x\x1b[31my"),
+    ];
+
+    let lines = text::resolve(&blocks, &Cache::default());
+
+    assert_eq!(lines, ["ab", "cdef", "x\x1b[31my"]);
+    let art = vec!["#".repeat(10)];
+    let rows = compose::banner(&art, &lines[2..], 4, Align::Left, Valign::Top, 34);
+    assert_eq!(rows, [format!("{}    x\x1b[31my\x1b[0m", art[0])]);
 }
 
 #[test]
@@ -281,4 +299,117 @@ fn command_output_c1_controls_and_control_strings_are_removed() {
     let lines = text::resolve(&[command(&format!("printf '{output}'"))], &Cache::default());
 
     assert_eq!(lines, ["abcdefghijkl"]);
+}
+
+#[test]
+fn tabs_in_literal_content_expand_to_8_column_stops() {
+    let cache = [(Hostname, "testhost".to_owned())].into_iter().collect();
+    let blocks = [
+        content_block("Host:\t{hostname}\tx"),
+        content_block("{cmd:printf ab}\tc\n\td"),
+    ];
+
+    let lines = text::resolve(&blocks, &cache);
+
+    assert_eq!(
+        lines,
+        [
+            format!("Host:{}testhost{}x", " ".repeat(3), " ".repeat(8)),
+            format!("ab{}c", " ".repeat(6)),
+            format!("{}d", " ".repeat(8)),
+        ]
+    );
+}
+
+#[test]
+fn colour_carries_across_the_lines_of_one_block() {
+    let blocks = [
+        command(r"printf '\033[36ma\nb\n\033[m'"),
+        content_block("c"),
+    ];
+
+    let lines = text::resolve(&blocks, &Cache::default());
+
+    assert_eq!(lines, ["\x1b[36ma", "\x1b[36mb", "c"]);
+    let art = vec!["\x1b[41m  \x1b[0m".to_owned(); 2];
+    let rows = compose::banner(&art, &lines[..2], 4, Align::Left, Valign::Top, 30);
+    assert_eq!(
+        rows,
+        [
+            format!("{}    \x1b[36ma\x1b[0m", art[0]),
+            format!("{}    \x1b[36mb\x1b[0m", art[1]),
+        ]
+    );
+}
+
+#[test]
+fn colour_carries_after_a_styled_block_prefix() {
+    let block = Block {
+        style: Style::Bold,
+        ..command(r"printf '\033[31ma\nb'")
+    };
+
+    let lines = text::resolve(&[block], &Cache::default());
+
+    assert_eq!(
+        lines,
+        ["\x1b[1m\x1b[31ma\x1b[0m", "\x1b[1m\x1b[31mb\x1b[0m"]
+    );
+}
+
+#[test]
+fn reset_ends_the_carried_colour() {
+    let blocks = [
+        command(r"printf '\033[1mx\033[0m\ny'"),
+        command(r"printf '\033[1;32mz\033[m\033[4mw\nv'"),
+    ];
+
+    let lines = text::resolve(&blocks, &Cache::default());
+
+    assert_eq!(
+        lines,
+        [
+            "\x1b[1mx\x1b[0m",
+            "y",
+            "\x1b[1;32mz\x1b[m\x1b[4mw",
+            "\x1b[4mv",
+        ]
+    );
+}
+
+#[test]
+fn trailing_escape_only_lines_of_output_are_dropped() {
+    let blocks = [
+        command(r"printf 'a\n\033(B\033[m\n'"),
+        content_block(r"g{cmd:printf 'h\n\033[m'}"),
+        command(r"printf 'e\n\n\033[m'"),
+    ];
+
+    let lines = text::resolve(&blocks, &Cache::default());
+
+    assert_eq!(lines, ["a", "gh", "e", ""]);
+}
+
+#[test]
+fn literal_newline_after_output_does_not_keep_its_last_line() {
+    let blocks = [
+        content_block(concat!(r"{cmd:printf 'h\n\033[m'}", "\n")),
+        content_block("b\n\n"),
+    ];
+
+    let lines = text::resolve(&blocks, &Cache::default());
+
+    assert_eq!(lines, ["h", "b", ""]);
+}
+
+#[test]
+fn literal_lines_are_never_dropped() {
+    let blocks = [
+        content_block("b\n\n"),
+        content_block("{cmd:printf c}\n\x1b[1m"),
+    ];
+
+    let lines = text::resolve(&blocks, &Cache::default());
+
+    assert_eq!(lines, ["b", "", "c", "\x1b[1m"]);
 }
