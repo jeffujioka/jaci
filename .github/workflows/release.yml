@@ -7,15 +7,15 @@ on:
 permissions:
   contents: write
 
-env:
-  GH_TOKEN: ${{ github.token }}
-  GH_REPO: ${{ github.repository }}
-
 jobs:
   draft:
     runs-on: ubuntu-latest
     steps:
-      - run: gh release create "$GITHUB_REF_NAME" --verify-tag --generate-notes --draft
+      # A re-run keeps the draft its first run made.
+      - run: gh release view "$GITHUB_REF_NAME" || gh release create "$GITHUB_REF_NAME" --verify-tag --generate-notes --draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
 
   build:
     needs: draft
@@ -47,21 +47,32 @@ jobs:
         run: cargo build --release --locked --target ${{ matrix.target }}
       - if: matrix.zig
         uses: mlugg/setup-zig@v2
+        with:
+          version: 0.17.0
       - if: matrix.zig
-        run: cargo install --locked cargo-zigbuild
+        run: cargo install --locked cargo-zigbuild --version 0.24.1
       - if: matrix.zig
         run: cargo zigbuild --release --locked --target ${{ matrix.target }}.2.17
       - if: matrix.zig
         name: Check the binary needs no glibc newer than 2.17
+        # bash with pipefail, so a failed objdump fails the step.
+        shell: bash
         run: |
           versions=$(objdump -T target/${{ matrix.target }}/release/jaci | grep -o 'GLIBC_[0-9.]*' | sort -uV)
           echo "$versions"
+          test -n "$versions"
           test "$(printf '%s\nGLIBC_2.17\n' "$versions" | sort -V | tail -n 1)" = GLIBC_2.17
       - run: tar -czf jaci-${{ github.ref_name }}-${{ matrix.target }}.tar.gz -C target/${{ matrix.target }}/release jaci
       - run: gh release upload "$GITHUB_REF_NAME" jaci-${{ github.ref_name }}-${{ matrix.target }}.tar.gz --clobber
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
 
   publish:
     needs: build
     runs-on: ubuntu-latest
     steps:
       - run: gh release edit "$GITHUB_REF_NAME" --draft=false
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}

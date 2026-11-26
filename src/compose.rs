@@ -5,10 +5,8 @@ use std::iter;
 
 use unicode_width::UnicodeWidthChar;
 
-use crate::art_file::{self, Token};
+use crate::ansi::{self, RESET, Token};
 use crate::config::{Align, Valign};
-
-const RESET: &str = "\x1b[0m";
 
 /// The narrowest text panel the banner shows; a narrower one leaves the art
 /// alone.
@@ -26,16 +24,22 @@ const MIN_PANEL_COLUMNS: usize = 20;
 pub fn banner(
     art: &[String],
     text: &[String],
-    padding: usize,
+    padding: u32,
     align: Align,
     valign: Valign,
     terminal_width: usize,
 ) -> Vec<String> {
-    let art_columns = art.first().map_or(0, |row| art_file::visible_width(row));
-    let panel = terminal_width.saturating_sub(art_columns + padding);
-    if panel < MIN_PANEL_COLUMNS {
+    let art_columns = art.first().map_or(0, |row| ansi::visible_width(row));
+    // A padding that leaves no room, even one past usize, leaves no panel.
+    let room = usize::try_from(padding).ok().and_then(|padding| {
+        let panel = terminal_width
+            .checked_sub(art_columns)?
+            .checked_sub(padding)?;
+        Some((padding, panel))
+    });
+    let Some((padding, panel)) = room.filter(|&(_, panel)| panel >= MIN_PANEL_COLUMNS) else {
         return art.to_vec();
-    }
+    };
     let pieces: Vec<Piece> = text.iter().flat_map(|line| wrap(line, panel)).collect();
     let spare = art.len().saturating_sub(pieces.len());
     let first = match valign {
@@ -87,7 +91,7 @@ struct Piece {
 /// starting with escape sequences, has them at the start of every piece and a
 /// reset at its end.
 fn wrap(line: &str, panel: usize) -> Vec<Piece> {
-    let style_len = art_file::tokens(line)
+    let style_len = ansi::tokens(line)
         .map_while(|token| match token {
             Token::Escape(escape) => Some(escape.len()),
             Token::Char(_) => None,
@@ -110,7 +114,7 @@ fn wrap(line: &str, panel: usize) -> Vec<Piece> {
     let mut pieces = Vec::new();
     let mut text = String::new();
     let mut width = 0;
-    for token in art_file::tokens(body) {
+    for token in ansi::tokens(body) {
         match token {
             Token::Escape(escape) => text.push_str(escape),
             Token::Char(c) => {

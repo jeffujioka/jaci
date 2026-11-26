@@ -1,3 +1,5 @@
+use std::io;
+
 use image::Rgba;
 use jaci::image_input;
 
@@ -37,5 +39,18 @@ fn corrupt_image_reported() {
     assert_eq!(
         error.to_string(),
         "jaci: cannot decode image test_fixtures/corrupt.png: unsupported or corrupt file"
+    );
+}
+
+#[test]
+fn unreadable_image_reported() {
+    let error = image_input::read("test_fixtures").unwrap_err();
+
+    assert_eq!(
+        error.to_string(),
+        format!(
+            "jaci: cannot read image test_fixtures: {}",
+            io::Error::from_raw_os_error(libc::EISDIR)
+        )
     );
 }

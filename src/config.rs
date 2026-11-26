@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 use toml::Spanned;
 use toml::de::{DeString, DeTable, DeValue};
 
+use crate::named::Named;
 use crate::render::{Charset, Mode};
 use crate::size::{self, DEFAULT_COLUMNS, DEFAULT_RATIO};
 use crate::template::{self, Segment};
@@ -33,6 +34,14 @@ pub fn folder(xdg_config_home: Option<&OsStr>, home: &Path) -> PathBuf {
             Path::new(xdg_config_home).join(FOLDER_NAME)
         }
         _ => home.join(".config").join(FOLDER_NAME),
+    }
+}
+
+/// `path` with a leading `~/` as the folder `home`.
+pub(crate) fn expand_home(path: &str, home: &Path) -> PathBuf {
+    match path.strip_prefix(HOME_PREFIX) {
+        Some(relative) => home.join(relative),
+        None => PathBuf::from(path),
     }
 }
 
@@ -94,12 +103,11 @@ pub enum Align {
     Right,
 }
 
-impl Align {
-    /// Every alignment, in the order the messages list them.
-    pub const ALL: [Self; 3] = [Self::Left, Self::Center, Self::Right];
+impl Named for Align {
+    /// In the order the messages list them.
+    const ALL: &'static [Self] = &[Self::Left, Self::Center, Self::Right];
 
-    /// The name the config gives the alignment.
-    pub const fn name(self) -> &'static str {
+    fn name(self) -> &'static str {
         match self {
             Self::Left => "left",
             Self::Center => "center",
@@ -117,12 +125,11 @@ pub enum Valign {
     Bottom,
 }
 
-impl Valign {
-    /// Every vertical alignment, in the order the messages list them.
-    pub const ALL: [Self; 3] = [Self::Top, Self::Center, Self::Bottom];
+impl Named for Valign {
+    /// In the order the messages list them.
+    const ALL: &'static [Self] = &[Self::Top, Self::Center, Self::Bottom];
 
-    /// The name the config gives the vertical alignment.
-    pub const fn name(self) -> &'static str {
+    fn name(self) -> &'static str {
         match self {
             Self::Top => "top",
             Self::Center => "center",
@@ -158,12 +165,11 @@ pub enum Style {
     Dim,
 }
 
-impl Style {
-    /// Every style, in the order the messages list them.
-    pub const ALL: [Self; 3] = [Self::Normal, Self::Bold, Self::Dim];
+impl Named for Style {
+    /// In the order the messages list them.
+    const ALL: &'static [Self] = &[Self::Normal, Self::Bold, Self::Dim];
 
-    /// The name the config gives the style.
-    pub const fn name(self) -> &'static str {
+    fn name(self) -> &'static str {
         match self {
             Self::Normal => "normal",
             Self::Bold => "bold",
@@ -323,13 +329,7 @@ fn read_root(root: &DeTable<'_>, home: &Path, config: &mut Config) -> Result<(),
 fn read_encode(table: &DeTable<'_>, encode: &mut Encode) -> Result<(), Invalid> {
     for (key, value) in entries(table) {
         match key.get_ref().as_ref() {
-            "mode" => {
-                encode.mode = one_of(
-                    value,
-                    "encode.mode",
-                    &Mode::ALL.map(|mode| (mode.name(), mode)),
-                )?;
-            }
+            "mode" => encode.mode = named(value, "encode.mode")?,
             "width" => encode.width = whole_number(value, "encode.width", 1)?,
             "ratio" => encode.ratio = number_above_zero(value, "encode.ratio")?,
             "charset" => {
@@ -349,10 +349,7 @@ fn read_banner(table: &DeTable<'_>, home: &Path, banner: &mut Banner) -> Result<
             "image" => {
                 const VALUES: &str = "a file path; a leading ~/ is the home folder";
                 let image = non_empty_text(value, "banner.image", VALUES)?;
-                banner.image = match image.strip_prefix(HOME_PREFIX) {
-                    Some(relative) => home.join(relative),
-                    None => PathBuf::from(image),
-                };
+                banner.image = expand_home(image, home);
             }
             "padding" => banner.padding = whole_number(value, "banner.padding", 0)?,
             "text" => read_text(table_of(value, "banner.text")?, &mut banner.text)?,
@@ -365,20 +362,8 @@ fn read_banner(table: &DeTable<'_>, home: &Path, banner: &mut Banner) -> Result<
 fn read_text(table: &DeTable<'_>, text: &mut Text) -> Result<(), Invalid> {
     for (key, value) in entries(table) {
         match key.get_ref().as_ref() {
-            "align" => {
-                text.align = one_of(
-                    value,
-                    "banner.text.align",
-                    &Align::ALL.map(|align| (align.name(), align)),
-                )?;
-            }
-            "valign" => {
-                text.valign = one_of(
-                    value,
-                    "banner.text.valign",
-                    &Valign::ALL.map(|valign| (valign.name(), valign)),
-                )?;
-            }
+            "align" => text.align = named(value, "banner.text.align")?,
+            "valign" => text.valign = named(value, "banner.text.valign")?,
             "blocks" => {
                 let DeValue::Array(blocks) = value.get_ref() else {
                     return Err(must_be(value, "banner.text.blocks", "an array of tables"));
@@ -417,9 +402,7 @@ fn read_block(value: &Value<'_>, number: usize) -> Result<Block, Invalid> {
                 let text = non_empty_text(value, &name, "a shell command")?;
                 command = Some(BlockText::Command(text.to_owned()));
             }
-            "style" => {
-                style = one_of(value, &name, &Style::ALL.map(|style| (style.name(), style)))?;
-            }
+            "style" => style = named(value, &name)?,
             "color" => color = Some(colour(value, &name)?),
             _ => return Err(unknown_key(key, &scope)),
         }
@@ -465,21 +448,14 @@ fn must_be(value: &Value<'_>, name: &str, values: &str) -> Invalid {
     Invalid::at(value.span(), format!("{name} must be {values}"))
 }
 
-/// The value matching one of `choices`, which also name the allowed values.
-fn one_of<T: Copy>(value: &Value<'_>, name: &str, choices: &[(&str, T)]) -> Result<T, Invalid> {
+/// The value of `T` that `value` names; any other value must be
+/// [`one of`](Named::one_of) the names.
+fn named<T: Named>(value: &Value<'_>, name: &str) -> Result<T, Invalid> {
     value
         .get_ref()
         .as_str()
-        .and_then(|text| {
-            choices
-                .iter()
-                .find(|(choice, _)| *choice == text)
-                .map(|&(_, choice)| choice)
-        })
-        .ok_or_else(|| {
-            let names: Vec<_> = choices.iter().map(|(choice, _)| *choice).collect();
-            must_be(value, name, &format!("one of {}", names.join(", ")))
-        })
+        .and_then(T::from_name)
+        .ok_or_else(|| must_be(value, name, &T::one_of()))
 }
 
 /// A whole number of at least `min` that fits in a `u32`.

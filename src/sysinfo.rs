@@ -7,6 +7,8 @@
 
 use std::fmt;
 
+use crate::named::Named;
+
 /// The value of a variable that cannot be found.
 pub const UNKNOWN: &str = "unknown";
 
@@ -24,12 +26,11 @@ pub enum StaticVariable {
     Gpu,
 }
 
-impl StaticVariable {
-    /// Every static variable.
-    pub const ALL: [Self; 4] = [Self::Hostname, Self::Os, Self::Cpu, Self::Gpu];
+impl Named for StaticVariable {
+    const ALL: &'static [Self] = &[Self::Hostname, Self::Os, Self::Cpu, Self::Gpu];
 
     /// The name a template writes between braces.
-    pub const fn name(self) -> &'static str {
+    fn name(self) -> &'static str {
         match self {
             Self::Hostname => "hostname",
             Self::Os => "os",
@@ -37,14 +38,9 @@ impl StaticVariable {
             Self::Gpu => "gpu",
         }
     }
+}
 
-    /// The static variable whose [`name`](Self::name) is `name`, if any.
-    pub fn from_name(name: &str) -> Option<Self> {
-        Self::ALL
-            .into_iter()
-            .find(|variable| variable.name() == name)
-    }
-
+impl StaticVariable {
     /// The variable's value on this machine, [`UNKNOWN`] when it cannot be
     /// found. It may run system tools, which can take a few seconds.
     pub fn resolve(self) -> String {
@@ -69,19 +65,22 @@ pub enum DynamicVariable {
     Uptime,
 }
 
-impl DynamicVariable {
-    /// Every dynamic variable.
-    pub const ALL: [Self; 3] = [Self::Ram, Self::Disk, Self::Uptime];
+impl Named for DynamicVariable {
+    /// In the order of declaration, so a variable's position in it is
+    /// `variable as usize`.
+    const ALL: &'static [Self] = &[Self::Ram, Self::Disk, Self::Uptime];
 
     /// The name a template writes between braces.
-    pub const fn name(self) -> &'static str {
+    fn name(self) -> &'static str {
         match self {
             Self::Ram => "ram",
             Self::Disk => "disk",
             Self::Uptime => "uptime",
         }
     }
+}
 
+impl DynamicVariable {
     /// The variable's value now, [`UNKNOWN`] when it cannot be found. It
     /// starts no process.
     pub fn resolve(self) -> String {
@@ -453,41 +452,16 @@ mod linux {
     }
 }
 
-/// The readers of the other targets, which find nothing.
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
-mod platform {
-    pub(super) fn hostname() -> Option<String> {
-        None
-    }
-
-    pub(super) fn os() -> Option<String> {
-        None
-    }
-
-    pub(super) fn cpu() -> Option<String> {
-        None
-    }
-
-    pub(super) fn gpu() -> Option<String> {
-        None
-    }
-
-    pub(super) fn memory() -> Option<(u64, u64)> {
-        None
-    }
-
-    pub(super) fn disk() -> Option<(u64, u64)> {
-        None
-    }
-
-    pub(super) fn uptime_seconds() -> Option<u64> {
-        None
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use super::lscpu_model;
+    use super::{DynamicVariable, Named, lscpu_model};
+
+    #[test]
+    fn each_dynamic_variable_sits_at_its_discriminant() {
+        for (index, &variable) in DynamicVariable::ALL.iter().enumerate() {
+            assert_eq!(variable as usize, index, "{}", variable.name());
+        }
+    }
 
     #[test]
     fn lscpu_model_skips_unknown_names() {

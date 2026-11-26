@@ -4,7 +4,6 @@
 use std::env;
 use std::error::Error;
 use std::fmt;
-use std::fs;
 use std::io::{self, IsTerminal, Write as _};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -23,8 +22,9 @@ use crate::compose;
 use crate::config::{self, Config, ConfigError, Encode};
 use crate::image_input::{self, ImageInputError};
 use crate::init::{self, InitError, Settings};
+use crate::named::Named;
 use crate::render::{self, Charset, Mode};
-use crate::size::{self, Sizing};
+use crate::size::{self, Sizing, TooLarge};
 use crate::text;
 
 /// Follows every error jaci reports.
@@ -128,7 +128,7 @@ struct EncodeArgs {
 
 impl ValueEnum for Mode {
     fn value_variants<'a>() -> &'a [Self] {
-        &Self::ALL
+        Self::ALL
     }
 
     fn to_possible_value(&self) -> Option<PossibleValue> {
@@ -157,6 +157,7 @@ enum CliError {
     Config(ConfigError),
     NoTerminal,
     Image(ImageInputError),
+    Size(TooLarge),
     Write {
         path: PathBuf,
         source: io::Error,
@@ -180,6 +181,7 @@ impl fmt::Display for CliError {
             Self::Config(error) => error.fmt(f),
             Self::NoTerminal => f.write_str("jaci: --auto needs a terminal to measure"),
             Self::Image(error) => error.fmt(f),
+            Self::Size(error) => error.fmt(f),
             Self::Write { path, source } => {
                 write!(
                     f,
@@ -206,6 +208,7 @@ impl Error for CliError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             Self::NoHome | Self::NoTerminal | Self::FirstTime | Self::NoArt | Self::NoCache => None,
+            Self::Size(error) => error.source(),
             Self::Config(error) => error.source(),
             Self::Image(error) => error.source(),
             Self::Write { source, .. } | Self::Print(source) => Some(source),
@@ -231,6 +234,12 @@ impl From<InitError> for CliError {
 impl From<ImageInputError> for CliError {
     fn from(error: ImageInputError) -> Self {
         Self::Image(error)
+    }
+}
+
+impl From<TooLarge> for CliError {
+    fn from(error: TooLarge) -> Self {
+        Self::Size(error)
     }
 }
 
@@ -295,7 +304,7 @@ fn init(args: InitArgs, folder: &Path, home: &Path) -> Result<(), CliError> {
         // Without an image, the check above leaves only interactive init.
         let image_path = match args.image {
             Some(image) => image,
-            None => init::ask_image(&mut input, &mut output)?,
+            None => init::ask_image(&mut input, &mut output, home)?,
         };
         let settings = if args.interactive {
             init::ask_settings(&mut input, &mut output)?
@@ -354,12 +363,17 @@ fn banner(args: &BannerArgs, config: &Config, folder: &Path) -> Result<(), CliEr
     }
     let text = &config.banner.text;
     let lines = text::resolve(&text.blocks, &cache);
-    // A padding wider than any terminal leaves the art alone, as it would.
-    let padding = usize::try_from(config.banner.padding).unwrap_or(usize::MAX);
     // The terminal jaci runs in: stdout, which the check above found to be
     // one. Without a size to read the art shows alone.
     let width = terminal_size::terminal_size().map_or(0, |(columns, _rows)| columns.0.into());
-    let rows = compose::banner(art.rows(), &lines, padding, text.align, text.valign, width);
+    let rows = compose::banner(
+        art.rows(),
+        &lines,
+        config.banner.padding,
+        text.align,
+        text.valign,
+        width,
+    );
     let mut output = String::new();
     for row in rows {
         output.push_str(&row);
@@ -417,25 +431,16 @@ fn encode_image(
     charset: &Charset,
     path: &Path,
 ) -> Result<(), CliError> {
-    let fit = size::fit(image, mode, sizing);
+    let fit = size::fit(image, mode, sizing)?;
     let rows = match mode {
         Mode::Halfblock => render::halfblock(&fit.image),
         Mode::Ascii => render::ascii(&fit.image, charset),
         Mode::Braille => render::braille(&fit.image),
     };
-    write_art(path, &rows).map_err(|source| CliError::Write {
+    art_file::write(path, &rows).map_err(|source| CliError::Write {
         path: path.to_path_buf(),
         source,
     })
-}
-
-/// Writes `rows` to the art file at `path`, creating its missing folders and
-/// replacing any file there.
-fn write_art(path: &Path, rows: &[String]) -> io::Result<()> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    art_file::write(path, rows)
 }
 
 /// Runs `work` with a progress spinner on stdout while stdout is a terminal,

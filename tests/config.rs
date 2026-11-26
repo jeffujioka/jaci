@@ -2,8 +2,9 @@ use std::ffi::OsStr;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use jaci::config::{self, Align, Banner, Config, Encode, Text, Valign};
+use jaci::config::{self, Align, Banner, Block, BlockText, Config, Encode, Style, Text, Valign};
 use jaci::render::{Charset, Mode};
+use jaci::template::Segment;
 use tempfile::TempDir;
 
 const HOME: &str = "/h";
@@ -61,6 +62,71 @@ fn missing_config_gives_defaults() {
                     align: Align::Left,
                     valign: Valign::Top,
                     blocks: Vec::new(),
+                },
+            },
+        }
+    );
+}
+
+#[test]
+fn every_key_loads_its_value() {
+    let (_folder, _path, config) = load(
+        r##"
+[encode]
+mode = "braille"
+width = 120
+ratio = 0.45
+charset = " #"
+
+[banner]
+image = "~/art/logo.ansi"
+padding = 2
+
+[banner.text]
+align = "right"
+valign = "center"
+
+[[banner.text.blocks]]
+content = "Shell: {cmd:basename $SHELL}"
+style = "bold"
+color = "#12aB34"
+
+[[banner.text.blocks]]
+command = "date"
+style = "dim"
+"##,
+    );
+
+    assert_eq!(
+        config.unwrap_or_else(|error| panic!("{error}")),
+        Config {
+            encode: Encode {
+                mode: Mode::Braille,
+                width: 120,
+                ratio: 0.45,
+                charset: Charset::new(" #").unwrap(),
+            },
+            banner: Banner {
+                image: Path::new(HOME).join("art/logo.ansi"),
+                padding: 2,
+                text: Text {
+                    align: Align::Right,
+                    valign: Valign::Center,
+                    blocks: vec![
+                        Block {
+                            text: BlockText::Content(vec![
+                                Segment::Text("Shell: ".to_owned()),
+                                Segment::Command("basename $SHELL".to_owned()),
+                            ]),
+                            style: Style::Bold,
+                            color: Some([0x12, 0xAB, 0x34]),
+                        },
+                        Block {
+                            text: BlockText::Command("date".to_owned()),
+                            style: Style::Dim,
+                            color: None,
+                        },
+                    ],
                 },
             },
         }

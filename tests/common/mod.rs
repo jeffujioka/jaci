@@ -1,9 +1,10 @@
-//! What the binary tests share: a run of the built `jaci` with its config
-//! folder and home folder in temporary folders, with piped stdio or with
-//! stdout on a pseudo-terminal of a chosen size.
-
-// Each test binary compiles this module whole and uses only part of it.
-#![allow(dead_code)]
+//! What the tests share: a run of the built `jaci` with its config folder
+//! and home folder in temporary folders, with piped stdio or with stdout on
+//! a pseudo-terminal of a chosen size, and the files such a run reads and
+//! writes.
+//!
+//! Each test binary compiles this module whole and uses only part of it, so
+//! the items some binaries leave unused allow dead code.
 
 use std::fs::{self, File};
 use std::io::{self, Read as _, Write as _};
@@ -15,13 +16,18 @@ use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use jaci::art_file::{self, Art};
+use jaci::cache::{self, Cache};
+use jaci::config::{self, Block, BlockText, Config, Style};
+use jaci::template;
 use tempfile::TempDir;
 
 /// The width of the pseudo-terminal [`in_terminal`] runs jaci on.
-pub const TERMINAL_COLUMNS: u16 = 100;
+const TERMINAL_COLUMNS: u16 = 100;
 /// The height of the pseudo-terminal [`in_terminal`] runs jaci on.
-pub const TERMINAL_ROWS: u16 = 40;
+const TERMINAL_ROWS: u16 = 40;
 /// Follows every error jaci reports.
+#[allow(dead_code)]
 pub const HELP_LINE: &str = "Run 'jaci --help' or 'jaci init --help' for more details.";
 
 /// Held from the creation of fds that are not yet closed on exec until the
@@ -37,12 +43,14 @@ fn lock_spawns() -> MutexGuard<'static, ()> {
 }
 
 /// A temporary `XDG_CONFIG_HOME` and `HOME` for one run of jaci.
+#[allow(dead_code)]
 pub struct Env {
     xdg_config_home: TempDir,
     home: TempDir,
 }
 
 impl Env {
+    #[allow(dead_code)]
     pub fn new() -> Self {
         Self {
             xdg_config_home: TempDir::new().unwrap(),
@@ -51,6 +59,7 @@ impl Env {
     }
 
     /// An env whose `config.toml` holds `toml`.
+    #[allow(dead_code)]
     pub fn with_config(toml: &str) -> Self {
         let env = Self::new();
         fs::create_dir_all(env.config_folder()).unwrap();
@@ -58,20 +67,42 @@ impl Env {
         env
     }
 
+    #[allow(dead_code)]
     pub fn config_folder(&self) -> PathBuf {
         self.xdg_config_home.path().join("jaci")
     }
 
+    #[allow(dead_code)]
     pub fn config_path(&self) -> PathBuf {
         self.config_folder().join("config.toml")
     }
 
+    #[allow(dead_code)]
     pub fn home(&self) -> &Path {
         self.home.path()
     }
 
+    /// The cache file in this env's config folder.
+    #[allow(dead_code)]
+    pub fn cache_path(&self) -> PathBuf {
+        self.config_folder().join(cache::FILE_NAME)
+    }
+
+    /// The default art file in this env's config folder.
+    #[allow(dead_code)]
+    pub fn art_path(&self) -> PathBuf {
+        self.config_folder().join(config::DEFAULT_IMAGE)
+    }
+
+    /// Loads this env's config, failing the test when it does not load.
+    #[allow(dead_code)]
+    pub fn config(&self) -> Config {
+        config::load(&self.config_folder(), self.home()).unwrap_or_else(|error| panic!("{error}"))
+    }
+
     /// The command `jaci <args>`, run from the crate folder so
     /// `test_fixtures/` resolves, with this env's config and home folders.
+    #[allow(dead_code)]
     pub fn command(&self, args: &[&str]) -> Command {
         let mut command = Command::new(env!("CARGO_BIN_EXE_jaci"));
         command
@@ -83,11 +114,13 @@ impl Env {
     }
 
     /// Runs `jaci <args>` with piped stdout and stderr and a null stdin.
+    #[allow(dead_code)]
     pub fn jaci(&self, args: &[&str]) -> Output {
         self.run(args, None)
     }
 
     /// Runs `jaci <args>` with piped stdio, `input` on its stdin.
+    #[allow(dead_code)]
     pub fn jaci_with_input(&self, args: &[&str], input: &str) -> Output {
         self.run(args, Some(input))
     }
@@ -118,15 +151,60 @@ impl Env {
     }
 }
 
+#[allow(dead_code)]
 pub fn stderr(output: &Output) -> String {
     String::from_utf8(output.stderr.clone()).unwrap()
 }
 
+#[allow(dead_code)]
 pub fn stdout(output: &Output) -> String {
     String::from_utf8(output.stdout.clone()).unwrap()
 }
 
+/// Asserts that a run exited 0 with no output.
+#[allow(dead_code)]
+pub fn assert_quiet_success(output: &Output) {
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(output));
+    assert!(output.stdout.is_empty(), "{:?}", output.stdout);
+    assert!(output.stderr.is_empty(), "{}", stderr(output));
+}
+
+/// Reads the cache file at `path`, failing the test when it is missing or
+/// damaged.
+#[allow(dead_code)]
+pub fn read_cache(path: &Path) -> Cache {
+    cache::read(path)
+        .unwrap_or_else(|error| panic!("{error}"))
+        .expect("the cache file is missing")
+}
+
+/// Reads the art file at `path`, failing the test when it is not one.
+#[allow(dead_code)]
+pub fn read_art(path: &Path) -> Art {
+    art_file::read(path).unwrap_or_else(|error| panic!("{error}"))
+}
+
+/// A config whose text blocks are the `content` of each of `contents`.
+#[allow(dead_code)]
+pub fn config_with(contents: &[&str]) -> String {
+    contents
+        .iter()
+        .map(|content| format!("[[banner.text.blocks]]\ncontent = '{content}'\n"))
+        .collect()
+}
+
+/// A normal block without colour whose `content` is `content`.
+#[allow(dead_code)]
+pub fn content_block(content: &str) -> Block {
+    Block {
+        text: BlockText::Content(template::parse(content).unwrap()),
+        style: Style::Normal,
+        color: None,
+    }
+}
+
 /// How a run on a pseudo-terminal ended.
+#[allow(dead_code)]
 #[derive(Debug)]
 pub struct TerminalRun {
     pub status: ExitStatus,
@@ -140,6 +218,7 @@ pub struct TerminalRun {
 
 /// Runs `command` as [`in_terminal_sized`] does, on a pseudo-terminal
 /// [`TERMINAL_COLUMNS`] wide and [`TERMINAL_ROWS`] high.
+#[allow(dead_code)]
 pub fn in_terminal(command: Command) -> TerminalRun {
     in_terminal_sized(command, TERMINAL_COLUMNS, TERMINAL_ROWS)
 }
@@ -147,6 +226,7 @@ pub fn in_terminal(command: Command) -> TerminalRun {
 /// Runs `command` with its stdout on a new pseudo-terminal `columns` wide
 /// and `rows` high, its stdin null and its stderr piped, and reads the
 /// terminal until the child has exited and closed it.
+#[allow(dead_code)]
 pub fn in_terminal_sized(mut command: Command, columns: u16, rows: u16) -> TerminalRun {
     let spawns = lock_spawns();
     let (master, slave) = open_terminal(columns, rows);

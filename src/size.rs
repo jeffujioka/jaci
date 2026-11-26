@@ -2,6 +2,8 @@
 //! resampled to the render mode's pixel grid for that many cells.
 
 use std::borrow::Cow;
+use std::error::Error;
+use std::fmt;
 
 use image::imageops::{self, FilterType};
 use image::{Rgba32FImage, RgbaImage};
@@ -12,6 +14,12 @@ pub(crate) const DEFAULT_COLUMNS: u32 = 80;
 pub(crate) const DEFAULT_RATIO: f64 = 0.5;
 /// Lanczos3 keeps photos sharp when they shrink to a few dozen cells.
 const FILTER: FilterType = FilterType::Lanczos3;
+/// The lowest alpha a resampled pixel keeps: below it, the pixel is
+/// transparent, so the filter's ringing past a shape's edge draws no cells.
+const MIN_RESAMPLED_ALPHA: u8 = 128;
+/// The most pixels a fitted image may hold: 2^25, an `f32` RGBA buffer of
+/// 512 MiB while it is resampled.
+const MAX_PIXELS: u32 = 1 << 25;
 
 /// Whether `ratio` is a valid character width ÷ height: finite and above 0.
 pub fn valid_ratio(ratio: f64) -> bool {
@@ -20,7 +28,7 @@ pub fn valid_ratio(ratio: f64) -> bool {
 
 /// The sizing inputs, already valid: options from the command line and keys
 /// from the config. `None` and `false` mean not given.
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, Default)]
 pub struct Sizing {
     /// `--full`: one column per cell of image pixels across.
     pub full: bool,
@@ -40,7 +48,7 @@ pub struct Sizing {
 
 /// An image fitted to art: its size in cells and the image at the render
 /// mode's pixel grid for that size.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug)]
 pub struct Fit<'a> {
     pub columns: u32,
     pub rows: u32,
@@ -49,11 +57,36 @@ pub struct Fit<'a> {
     pub image: Cow<'a, RgbaImage>,
 }
 
+/// Why an image cannot be fitted: its art's pixel grid would hold more than
+/// 2^25 pixels.
+#[derive(Debug)]
+pub struct TooLarge {
+    pub columns: u32,
+    pub rows: u32,
+}
+
+impl fmt::Display for TooLarge {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "jaci: art of {}×{} cells is too large",
+            self.columns, self.rows
+        )
+    }
+}
+
+impl Error for TooLarge {}
+
 /// Fits `image` to art in `mode`. The columns come from the first of
 /// `--full`, `--auto`, `-w`, `-s`, `[encode].width`, then 80; the rows are
 /// round(columns × height ÷ width × ratio), at least 1, with the ratio from
 /// `--ratio`, else `[encode].ratio`, else 0.5.
-pub fn fit<'a>(image: &'a RgbaImage, mode: Mode, sizing: &Sizing) -> Fit<'a> {
+///
+/// # Errors
+///
+/// [`TooLarge`] when the art's pixel grid would hold more than 2^25
+/// pixels.
+pub fn fit<'a>(image: &'a RgbaImage, mode: Mode, sizing: &Sizing) -> Result<Fit<'a>, TooLarge> {
     let (width, height) = image.dimensions();
     let (cell_width, cell_height) = mode.cell_size();
     let full = rounded(f64::from(width) / f64::from(cell_width));
@@ -74,23 +107,32 @@ pub fn fit<'a>(image: &'a RgbaImage, mode: Mode, sizing: &Sizing) -> Fit<'a> {
         .unwrap_or(DEFAULT_RATIO);
     let rows = rounded(f64::from(columns) * f64::from(height) / f64::from(width) * ratio);
 
-    let target = (columns * cell_width, rows * cell_height);
+    let target = columns
+        .checked_mul(cell_width)
+        .zip(rows.checked_mul(cell_height))
+        .filter(|&(width, height)| {
+            width
+                .checked_mul(height)
+                .is_some_and(|pixels| pixels <= MAX_PIXELS)
+        })
+        .ok_or(TooLarge { columns, rows })?;
     let image = if image.dimensions() == target {
         Cow::Borrowed(image)
     } else {
         Cow::Owned(resample(image, target.0, target.1))
     };
-    Fit {
+    Ok(Fit {
         columns,
         rows,
         image,
-    }
+    })
 }
 
 /// `image` resized to `width` × `height` with its colour premultiplied by
 /// alpha, as `imageops::resize` assumes, so the hidden colour of transparent
 /// pixels never bleeds into their neighbours. A pixel that comes out with
-/// alpha 0 is transparent black.
+/// alpha below [`MIN_RESAMPLED_ALPHA`] is transparent black; every other
+/// keeps its colour and alpha.
 fn resample(image: &RgbaImage, width: u32, height: u32) -> RgbaImage {
     let premultiplied = image
         .as_raw()
@@ -108,7 +150,7 @@ fn resample(image: &RgbaImage, width: u32, height: u32) -> RgbaImage {
         .chunks_exact(4)
         .flat_map(|pixel| {
             let (alpha, a) = (byte(pixel[3]), pixel[3]);
-            if alpha == 0 {
+            if alpha < MIN_RESAMPLED_ALPHA {
                 return [0; 4];
             }
             [
@@ -149,7 +191,7 @@ mod tests {
     fn image_at_target_size_is_used_unchanged() {
         let image = RgbaImage::from_pixel(80, 80, Rgba([1, 2, 3, 255]));
 
-        let fit = fit(&image, Mode::Halfblock, &Sizing::default());
+        let fit = fit(&image, Mode::Halfblock, &Sizing::default()).unwrap();
 
         assert!(matches!(fit.image, Cow::Borrowed(borrowed) if std::ptr::eq(borrowed, &image)));
     }
@@ -166,8 +208,8 @@ mod tests {
             ..config.clone()
         };
 
-        assert_eq!(fit(&image, Mode::Halfblock, &config).rows, 20);
-        assert_eq!(fit(&image, Mode::Halfblock, &option).rows, 80);
+        assert_eq!(fit(&image, Mode::Halfblock, &config).unwrap().rows, 20);
+        assert_eq!(fit(&image, Mode::Halfblock, &option).unwrap().rows, 80);
     }
 
     #[test]

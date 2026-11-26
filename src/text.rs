@@ -11,8 +11,10 @@ use std::sync::mpsc::{self, RecvTimeoutError, Sender};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use crate::ansi::{self, RESET};
 use crate::cache::Cache;
 use crate::config::{Block, BlockText, Style};
+use crate::named::Named;
 use crate::sysinfo::{DynamicVariable, StaticVariable, UNKNOWN};
 use crate::template::{self, Segment};
 
@@ -21,7 +23,6 @@ pub const COMMAND_TIME_LIMIT: Duration = Duration::from_secs(3);
 
 const BOLD: &str = "\x1b[1m";
 const DIM: &str = "\x1b[2m";
-const RESET: &str = "\x1b[0m";
 
 /// The panel lines of `blocks`, in block order: one line per line of each
 /// block's resolved text, carrying the block's style and colour.
@@ -78,21 +79,22 @@ pub fn resolve(blocks: &[Block], cache: &Cache) -> Vec<String> {
 
 /// The escapes that start each line of `block`: its style, then its colour.
 fn style_prefix(block: &Block) -> String {
-    let style = match block.style {
-        Style::Normal => "",
-        Style::Bold => BOLD,
-        Style::Dim => DIM,
+    let mut prefix = match block.style {
+        Style::Normal => String::new(),
+        Style::Bold => BOLD.to_owned(),
+        Style::Dim => DIM.to_owned(),
     };
-    match block.color {
-        Some([red, green, blue]) => format!("{style}\x1b[38;2;{red};{green};{blue}m"),
-        None => style.to_owned(),
+    if let Some(colour) = block.color {
+        ansi::push_foreground(&mut prefix, colour);
     }
+    prefix
 }
 
 /// The values of the variables of one [`resolve`] call.
 struct Variables<'c> {
     cache: &'c Cache,
-    /// The values of [`DynamicVariable::ALL`] read so far, by position.
+    /// The values of [`DynamicVariable::ALL`] read so far, each at its
+    /// position there.
     dynamic: [Option<String>; DynamicVariable::ALL.len()],
 }
 
@@ -124,10 +126,8 @@ impl<'c> Variables<'c> {
         if let Some(variable) = StaticVariable::from_name(name) {
             return Some(self.cache.get(variable).unwrap_or(UNKNOWN));
         }
-        let index = DynamicVariable::ALL
-            .iter()
-            .position(|variable| variable.name() == name)?;
-        Some(self.dynamic[index].get_or_insert_with(|| DynamicVariable::ALL[index].resolve()))
+        let variable = DynamicVariable::from_name(name)?;
+        Some(self.dynamic[variable as usize].get_or_insert_with(|| variable.resolve()))
     }
 }
 

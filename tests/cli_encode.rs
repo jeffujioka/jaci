@@ -4,26 +4,13 @@
 mod common;
 
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
-use common::{Env, stderr};
-use jaci::art_file::{self, Art};
+use common::{Env, HELP_LINE, read_art, stderr};
 use tempfile::TempDir;
 
 const IMAGE: &str = "test_fixtures/4x4.png";
-const HELP_LINE: &str = "Run 'jaci --help' or 'jaci init --help' for more details.";
 const ASCII_GOLDEN: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/test_fixtures/4x4-ascii.ansi");
-
-impl Env {
-    fn default_art(&self) -> PathBuf {
-        self.config_folder().join("art.ansi")
-    }
-}
-
-/// Reads the art file at `path`, failing the test when it is not one.
-fn art(path: &Path) -> Art {
-    art_file::read(path).unwrap_or_else(|error| panic!("{error}"))
-}
 
 #[test]
 fn broken_config_stops_encode() {
@@ -34,7 +21,7 @@ fn broken_config_stops_encode() {
     assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
     let prefix = format!("jaci: config {}: line 1: ", env.config_path().display());
     assert!(stderr(&output).starts_with(&prefix), "{}", stderr(&output));
-    assert!(!env.default_art().exists());
+    assert!(!env.art_path().exists());
 }
 
 #[test]
@@ -44,7 +31,7 @@ fn config_value_applies() {
     let output = env.jaci(&["encode", IMAGE]);
 
     assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
-    assert_eq!(art(&env.default_art()).columns(), 10);
+    assert_eq!(read_art(&env.art_path()).columns(), 10);
 }
 
 #[test]
@@ -54,7 +41,7 @@ fn option_beats_config() {
     let output = env.jaci(&["encode", "-w", "20", IMAGE]);
 
     assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
-    assert_eq!(art(&env.default_art()).columns(), 20);
+    assert_eq!(read_art(&env.art_path()).columns(), 20);
 }
 
 #[test]
@@ -64,7 +51,7 @@ fn encode_writes_default_art_file() {
     let output = env.jaci(&["encode", IMAGE]);
 
     assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
-    let art = art(&env.default_art());
+    let art = read_art(&env.art_path());
     assert_eq!((art.columns(), art.rows().len()), (80, 40));
     assert!(output.stdout.is_empty());
     assert!(output.stderr.is_empty());
@@ -79,7 +66,7 @@ fn encode_writes_config_image_path() {
     let output = env.jaci(&["encode", IMAGE]);
 
     assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
-    art(&image);
+    read_art(&image);
 }
 
 #[test]
@@ -92,8 +79,8 @@ fn output_option_names_file() {
     let output = env.jaci(&["encode", "-o", out.to_str().unwrap(), IMAGE]);
 
     assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
-    art(&out);
-    assert!(!env.default_art().exists());
+    read_art(&out);
+    assert!(!env.art_path().exists());
 }
 
 #[test]
@@ -106,7 +93,7 @@ fn existing_art_file_replaced() {
     let output = env.jaci(&["encode", "-o", out.to_str().unwrap(), IMAGE]);
 
     assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
-    let art = art(&out);
+    let art = read_art(&out);
     assert_eq!((art.columns(), art.rows().len()), (80, 40));
 }
 
@@ -131,7 +118,7 @@ fn width_and_scale_refused() {
     let output = env.jaci(&["encode", "-w", "40", "-s", "50", IMAGE]);
 
     assert_eq!(output.status.code(), Some(2), "{}", stderr(&output));
-    assert!(!env.default_art().exists());
+    assert!(!env.art_path().exists());
 }
 
 #[test]
@@ -157,7 +144,7 @@ fn out_of_range_options_are_usage_errors() {
             stderr(&output)
         );
     }
-    assert!(!env.default_art().exists());
+    assert!(!env.art_path().exists());
 }
 
 #[test]
@@ -171,7 +158,7 @@ fn auto_needs_a_terminal() {
         stderr(&output),
         format!("jaci: --auto needs a terminal to measure\n{HELP_LINE}\n")
     );
-    assert!(!env.default_art().exists());
+    assert!(!env.art_path().exists());
 }
 
 #[test]
@@ -193,13 +180,41 @@ fn write_failure_names_art_file() {
 }
 
 #[test]
+fn art_too_large_is_refused() {
+    let env = Env::new();
+
+    for (args, cells) in [
+        (
+            &["-w", "4294967295", "-m", "braille"][..],
+            "4294967295×2147483648",
+        ),
+        (&["-w", "20000"][..], "20000×10000"),
+    ] {
+        let output = env.jaci(&[&["encode"], args, &[IMAGE]].concat());
+
+        assert_eq!(
+            output.status.code(),
+            Some(1),
+            "{args:?}: {}",
+            stderr(&output)
+        );
+        assert_eq!(
+            stderr(&output),
+            format!("jaci: art of {cells} cells is too large\n{HELP_LINE}\n"),
+            "{args:?}"
+        );
+    }
+    assert!(!env.art_path().exists());
+}
+
+#[test]
 fn options_pick_mode_and_ratio() {
     let env = Env::new();
 
     let output = env.jaci(&["encode", "-m", "ascii", "--ratio", "1", "-w", "4", IMAGE]);
 
     assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
-    assert_eq!(read(&env.default_art()), read(Path::new(ASCII_GOLDEN)));
+    assert_eq!(read(&env.art_path()), read(Path::new(ASCII_GOLDEN)));
 }
 
 #[test]
@@ -209,7 +224,7 @@ fn config_picks_mode_and_ratio() {
     let output = env.jaci(&["encode", IMAGE]);
 
     assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
-    assert_eq!(read(&env.default_art()), read(Path::new(ASCII_GOLDEN)));
+    assert_eq!(read(&env.art_path()), read(Path::new(ASCII_GOLDEN)));
 }
 
 #[test]
@@ -220,7 +235,7 @@ fn charset_from_config_then_option() {
         let output = env.jaci(&[&["encode"], args, &[IMAGE]].concat());
 
         assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
-        let glyphs = visible(&read(&env.default_art()));
+        let glyphs = visible(&read(&env.art_path()));
         assert!(glyphs.contains(glyph), "{glyphs:?}");
         assert!(
             glyphs.chars().all(|c| [glyph, ' ', '\n'].contains(&c)),

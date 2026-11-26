@@ -6,7 +6,8 @@ use std::fmt;
 use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
 
-use crate::config::{Align, DEFAULT_PADDING, Encode, HOME_PREFIX, Style, Valign};
+use crate::config::{self, Align, DEFAULT_PADDING, Encode, HOME_PREFIX, Style, Valign};
+use crate::named::Named;
 use crate::render::{DEFAULT_CHARSET, Mode};
 use crate::sysinfo::{DynamicVariable, StaticVariable};
 
@@ -17,10 +18,9 @@ const LABELS: [&str; BLOCK_COUNT] = ["Host", "OS", "CPU", "GPU", "RAM", "Disk", 
 
 /// The built-in variables' names: the static ones, then the dynamic ones.
 fn variable_names() -> impl Iterator<Item = &'static str> {
-    StaticVariable::ALL
-        .into_iter()
-        .map(StaticVariable::name)
-        .chain(DynamicVariable::ALL.into_iter().map(DynamicVariable::name))
+    let statics = StaticVariable::ALL.iter().map(|variable| variable.name());
+    let dynamics = DynamicVariable::ALL.iter().map(|variable| variable.name());
+    statics.chain(dynamics)
 }
 
 /// The text of each built-in variable's block, such as `Host: {hostname}`.
@@ -137,14 +137,6 @@ fn toml_value(value: impl Into<toml::Value>) -> String {
     value.into().to_string()
 }
 
-/// The `one of a, b, c` list of `names`.
-fn one_of(names: impl IntoIterator<Item = &'static str>) -> String {
-    format!(
-        "one of {}",
-        names.into_iter().collect::<Vec<_>>().join(", ")
-    )
-}
-
 /// The full config: every key with its value and a comment line above it,
 /// `[banner].image` set to `image`, the mode and width of `settings`, a
 /// block for each variable `settings` shows, and commented-out examples of
@@ -167,7 +159,7 @@ pub fn full(image: &str, settings: &Settings) -> String {
         if index == 0 {
             blocks.push_str(&format!(
                 "# The style: {}.\nstyle = {}\n",
-                one_of(Style::ALL.map(Style::name)),
+                Style::one_of(),
                 toml_value(Style::default().name())
             ));
         }
@@ -175,7 +167,7 @@ pub fn full(image: &str, settings: &Settings) -> String {
     }
     format!(
         "\
-# jaci's config. Every key is optional; left out, it takes the value shown.
+# jaci's config. Every key is optional; left out, it takes its default.
 
 [encode]
 # The render mode: {modes}.
@@ -212,16 +204,16 @@ valign = {valign}
 # The colour as #RRGGBB; left out, the text keeps the terminal's colour.
 # color = {color_example}
 ",
-        modes = one_of(Mode::ALL.map(Mode::name)),
+        modes = Mode::one_of(),
         mode = toml_value(settings.mode.name()),
         width = toml_value(i64::from(settings.width)),
         ratio = toml_value(encode.ratio),
         charset = toml_value(DEFAULT_CHARSET),
         image = toml_value(image),
         padding = toml_value(i64::from(DEFAULT_PADDING)),
-        aligns = one_of(Align::ALL.map(Align::name)),
+        aligns = Align::one_of(),
         align = toml_value(Align::default().name()),
-        valigns = one_of(Valign::ALL.map(Valign::name)),
+        valigns = Valign::one_of(),
         valign = toml_value(Valign::default().name()),
         cmd_example = toml_value("Shell: {cmd:basename \"$SHELL\"}"),
         command_example = toml_value("date '+%A, %d %B'"),
@@ -264,18 +256,22 @@ pub fn confirm_overwrite(
     }
 }
 
-/// Asks `Image path: `.
+/// Asks `Image path: `; a leading `~/` in the answer is the folder `home`.
 ///
 /// # Errors
 ///
 /// [`InitError::NoImage`] for an empty answer and [`InitError::Prompt`] when
 /// the question cannot be asked.
-pub fn ask_image(input: &mut impl BufRead, output: &mut impl Write) -> Result<PathBuf, InitError> {
+pub fn ask_image(
+    input: &mut impl BufRead,
+    output: &mut impl Write,
+    home: &Path,
+) -> Result<PathBuf, InitError> {
     let answer = ask(input, output, "Image path: ")?;
     if answer.is_empty() {
         Err(InitError::NoImage)
     } else {
-        Ok(PathBuf::from(answer))
+        Ok(config::expand_home(&answer, home))
     }
 }
 
@@ -292,8 +288,11 @@ pub fn ask_settings(
     output: &mut impl Write,
 ) -> Result<Settings, InitError> {
     let defaults = Settings::default();
-    let modes = Mode::ALL.map(Mode::name).join(", ");
-    let question = format!("Render mode ({modes}) [{}]: ", defaults.mode.name());
+    let question = format!(
+        "Render mode ({}) [{}]: ",
+        Mode::names(),
+        defaults.mode.name()
+    );
     let mode = parse_mode(&ask(input, output, &question)?, defaults.mode)?;
     let question = format!("Width in columns [{}]: ", defaults.width);
     let width = parse_width(&ask(input, output, &question)?, defaults.width)?;
@@ -326,10 +325,7 @@ fn parse_mode(answer: &str, default: Mode) -> Result<Mode, InitError> {
     if answer.is_empty() {
         return Ok(default);
     }
-    Mode::ALL
-        .into_iter()
-        .find(|mode| mode.name() == answer)
-        .ok_or_else(|| InitError::InvalidMode(answer.to_owned()))
+    Mode::from_name(answer).ok_or_else(|| InitError::InvalidMode(answer.to_owned()))
 }
 
 /// The whole number of at least 1 in `answer`, `default` when it is empty.
@@ -379,6 +375,16 @@ mod tests {
         let value = image_value(Path::new("/x/jaci/art.ansi"), Path::new("/h"));
 
         assert_eq!(value.unwrap(), "/x/jaci/art.ansi");
+    }
+
+    #[test]
+    fn full_config_says_left_out_keys_take_their_default() {
+        let text = full("~/art.ansi", &Settings::default());
+
+        assert_eq!(
+            text.lines().next(),
+            Some("# jaci's config. Every key is optional; left out, it takes its default.")
+        );
     }
 
     #[test]

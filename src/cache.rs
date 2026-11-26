@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 
 use crate::atomic_file;
 use crate::config::{BlockText, Config};
+use crate::named::Named;
 use crate::sysinfo::StaticVariable;
 use crate::template::{self, Segment};
 
@@ -18,7 +19,7 @@ use crate::template::{self, Segment};
 pub const FILE_NAME: &str = "cache";
 
 /// Values of static variables, each saved or not.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Default, PartialEq, Eq)]
 pub struct Cache {
     /// Keyed by [`StaticVariable::name`], the keys of the file.
     values: BTreeMap<&'static str, String>,
@@ -150,7 +151,8 @@ pub fn used_variables(config: &Config) -> Vec<StaticVariable> {
         .filter_map(|placeholder| StaticVariable::from_name(placeholder.name))
         .collect();
     StaticVariable::ALL
-        .into_iter()
+        .iter()
+        .copied()
         .filter(|variable| named.contains(variable))
         .collect()
 }
