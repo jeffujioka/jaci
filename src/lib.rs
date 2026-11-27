@@ -15,6 +15,7 @@ pub mod palette;
 pub mod render;
 pub mod saved_image;
 pub mod size;
+pub mod sized_art;
 pub mod sysinfo;
 pub mod template;
 pub mod text;

@@ -5,12 +5,12 @@
 mod common;
 
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use common::{
     Env, HELP_LINE, TerminalRun, assert_quiet_success, config_with, in_terminal, in_terminal_sized,
-    read_art, read_cache, stderr,
+    read_art, read_cache, stderr, stdout,
 };
 use jaci::sysinfo::StaticVariable::Hostname;
 use tempfile::TempDir;
@@ -41,6 +41,45 @@ impl Env {
     fn banner(&self, args: &[&str]) -> TerminalRun {
         in_terminal(self.command(args))
     }
+
+    /// The folder of the sized art.
+    fn sizes(&self) -> PathBuf {
+        self.config_folder().join("sizes")
+    }
+
+    /// The names of the files in the folder of the sized art, sorted.
+    fn sized_art_names(&self) -> Vec<String> {
+        let mut names: Vec<String> = fs::read_dir(self.sizes())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+            .collect();
+        names.sort();
+        names
+    }
+
+    /// Runs `jaci banner` on a pseudo-terminal `columns` wide and `rows`
+    /// high.
+    fn banner_in(&self, columns: u16, rows: u16) -> TerminalRun {
+        in_terminal_sized(self.command(&["banner"]), columns, rows)
+    }
+
+    /// The art file `jaci encode -w <columns> -o <tmp>/x.ansi` writes from
+    /// the saved image with this env's config.
+    fn encoded_aside(&self, columns: u32) -> Vec<u8> {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("x.ansi");
+        let saved = self.config_folder().join("image.png");
+        let output = self.jaci(&[
+            "encode",
+            "-w",
+            &columns.to_string(),
+            "-o",
+            path.to_str().unwrap(),
+            saved.to_str().unwrap(),
+        ]);
+        assert_quiet_success(&output);
+        fs::read(path).unwrap()
+    }
 }
 
 /// A config folder holding `toml`, the halfblock art and a cache holding
@@ -49,6 +88,15 @@ fn set_up(toml: &str) -> Env {
     let env = Env::with_config(toml);
     env.add_art();
     env.add_cache(TESTHOST_CACHE);
+    env
+}
+
+/// [`set_up`]'s config folder after `jaci encode test_fixtures/4x4.png`
+/// has run, so it holds a saved image.
+fn with_saved_image(toml: &str) -> Env {
+    let env = set_up(toml);
+    let output = env.jaci(&["encode", "test_fixtures/4x4.png"]);
+    assert_quiet_success(&output);
     env
 }
 
@@ -297,4 +345,120 @@ fn title_needs_its_variables_in_cache() {
     let run = env.banner(&["banner"]);
 
     assert_setup_message(&run, "Almost there! Run 'jaci cache' to finish setting up.");
+}
+
+#[test]
+fn banner_encodes_art_for_pane() {
+    let env = with_saved_image(HOSTNAME_CONFIG);
+
+    let run = env.banner_in(100, 40);
+
+    let sized = env.sizes().join("60.ansi");
+    assert_eq!(fs::read(&sized).unwrap(), env.encoded_aside(60));
+    assert_eq!(read_art(&sized).rows().len(), 30);
+    assert_shown(&run, &beside(&sized, "testhost"));
+}
+
+#[test]
+fn kept_sized_art_shown_as_stored() {
+    let env = with_saved_image(HOSTNAME_CONFIG);
+    let first = env.banner_in(100, 40);
+    assert_eq!(first.status.code(), Some(0), "{}", first.stderr);
+    let row = format!("{}\x1b[0m", "x".repeat(60));
+    fs::write(env.sizes().join("60.ansi"), format!("{row}\n")).unwrap();
+
+    let run = env.banner_in(100, 40);
+
+    assert_shown(&run, &format!("{row}    testhost\n"));
+}
+
+#[test]
+fn sixteen_sized_arts_kept() {
+    let env = with_saved_image("");
+
+    for columns in (24..=39).chain([24, 40]) {
+        let run = env.banner_in(columns, 40);
+        assert_eq!(run.status.code(), Some(0), "{}", run.stderr);
+    }
+
+    let names = env.sized_art_names();
+    assert_eq!(names.len(), 16, "{names:?}");
+    for kept in ["20.ansi", "36.ansi"] {
+        assert!(
+            names.iter().any(|name| name == kept),
+            "no {kept}: {names:?}"
+        );
+    }
+    assert!(!env.sizes().join("21.ansi").exists(), "{names:?}");
+}
+
+#[test]
+fn changed_encode_settings_drop_sized_art() {
+    let env = with_saved_image(HOSTNAME_CONFIG);
+    let first = env.banner_in(50, 40);
+    assert_eq!(first.status.code(), Some(0), "{}", first.stderr);
+    assert!(env.sizes().join("38.ansi").exists());
+    fs::write(
+        env.config_path(),
+        format!("{HOSTNAME_CONFIG}\n[encode]\nmode = \"halfblock\"\n"),
+    )
+    .unwrap();
+
+    let run = env.banner_in(100, 40);
+
+    assert_eq!(run.status.code(), Some(0), "{}", run.stderr);
+    assert_eq!(env.sized_art_names(), ["60.ansi"]);
+    assert_eq!(
+        fs::read(env.sizes().join("60.ansi")).unwrap(),
+        env.encoded_aside(60)
+    );
+}
+
+#[test]
+fn without_saved_image_art_file_shown_as_today() {
+    let env = set_up(HOSTNAME_CONFIG);
+
+    let run = env.banner_in(30, 3);
+
+    let art = read_art(Path::new(HALFBLOCK));
+    let rows = art.rows();
+    assert_eq!(rows.len(), 2);
+    assert_shown(&run, &format!("{}    testhost\n{}\n", rows[0], rows[1]));
+    assert!(!env.sizes().exists());
+}
+
+#[test]
+fn art_argument_shown_as_today() {
+    let env = with_saved_image(HOSTNAME_CONFIG);
+    let tmp = TempDir::new().unwrap();
+    let other = tmp.path().join("other.ansi");
+    fs::copy(ASCII, &other).unwrap();
+
+    let run = in_terminal_sized(env.command(&["banner", other.to_str().unwrap()]), 100, 40);
+
+    assert_shown(&run, &beside(&other, "testhost"));
+    assert!(!env.sizes().exists());
+}
+
+#[test]
+fn pane_of_unknown_size_shows_todays_banner() {
+    let env = with_saved_image(HOSTNAME_CONFIG);
+
+    let run = env.banner_in(0, 0);
+
+    let art = read_art(&env.art_path());
+    let expected: String = art.rows().iter().map(|row| format!("{row}\n")).collect();
+    assert_shown(&run, &expected);
+    assert!(!env.sizes().exists());
+}
+
+#[test]
+fn help_tells_of_the_layout_and_the_saved_image() {
+    let output = Env::new().jaci(&["banner", "--help"]);
+
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    let help = stdout(&output);
+    assert!(help.contains("laid out for the pane"), "{help}");
+    assert!(help.contains("sized from the saved image"), "{help}");
+    assert!(help.contains("instead of the sized art"), "{help}");
 }

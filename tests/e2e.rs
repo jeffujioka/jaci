@@ -7,9 +7,9 @@ mod common;
 use common::{Env, in_terminal_sized, plain, read_art, read_cache, stderr};
 use jaci::sysinfo::StaticVariable::{Hostname, User};
 
-/// Wide enough for the 80-column art, the padding and the full config's
-/// text panel.
-const COLUMNS: u16 = 120;
+/// Wide and high enough for the widest art, 60 columns by 30 rows, beside
+/// the full config's text panel.
+const COLUMNS: u16 = 200;
 const ROWS: u16 = 50;
 
 #[test]
@@ -24,10 +24,9 @@ fn banner_works_right_after_init() {
     assert!(banner.status.success(), "banner: {banner:?}");
     assert_eq!(banner.stderr, "");
 
-    let config = env.config();
-    let art = read_art(&config.banner.image);
+    let art = read_art(&env.config_folder().join("sizes").join("60.ansi"));
     let art_rows = art.rows();
-    assert_eq!(art_rows.len(), 40);
+    assert_eq!(art_rows.len(), 30);
     let lines: Vec<&str> = banner.stdout.lines().collect();
     assert_eq!(lines.len(), art_rows.len(), "banner: {}", banner.stdout);
     for (line, art_row) in lines.iter().zip(art_rows) {

@@ -6,7 +6,7 @@ mod common;
 use std::fs;
 use std::path::Path;
 
-use common::{Env, HELP_LINE, plain, read_art, read_png, stderr};
+use common::{Env, HELP_LINE, plain, read_art, read_png, stderr, stdout};
 use tempfile::TempDir;
 
 const IMAGE: &str = "test_fixtures/4x4.png";
@@ -403,6 +403,16 @@ fn new_saved_image_drops_sized_art() {
     assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
     let left = fs::read_dir(&sizes).map_or(0, Iterator::count);
     assert_eq!(left, 0, "sized art left in {}", sizes.display());
+}
+
+#[test]
+fn help_tells_of_the_saved_image() {
+    let output = Env::new().jaci(&["encode", "--help"]);
+
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    let help = stdout(&output);
+    assert!(help.contains("keep the image as the saved image"), "{help}");
+    assert!(help.contains("delete the sized art"), "{help}");
 }
 
 fn read(path: &Path) -> String {
