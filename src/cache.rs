@@ -161,16 +161,21 @@ pub fn used_variables(config: &Config) -> Vec<StaticVariable> {
         .collect()
 }
 
-/// Resolves the static variables that `config` uses and writes exactly
-/// those to the cache file at `path`, as [`write()`] does.
+/// Resolves the static variables that `config` uses with `resolve`, such as
+/// [`StaticVariable::resolve`], and writes exactly those to the cache file at
+/// `path`, as [`write()`] does.
 ///
 /// # Errors
 ///
 /// [`CacheError::Write`] when a folder or the file cannot be written.
-pub fn refresh(config: &Config, path: &Path) -> Result<(), CacheError> {
+pub fn refresh(
+    config: &Config,
+    path: &Path,
+    mut resolve: impl FnMut(StaticVariable) -> String,
+) -> Result<(), CacheError> {
     let cache = used_variables(config)
         .into_iter()
-        .map(|variable| (variable, variable.resolve()))
+        .map(|variable| (variable, resolve(variable)))
         .collect();
     write(path, &cache)
 }

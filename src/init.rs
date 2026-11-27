@@ -6,65 +6,158 @@ use std::fmt;
 use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
 
-use crate::config::{self, Align, DEFAULT_PADDING, Encode, HOME_PREFIX, Style, Valign};
+use crate::config::{
+    self, Align, Block, BlockText, DEFAULT_PADDING, Encode, HOME_PREFIX, Kind, Style, TextBlock,
+    Valign,
+};
 use crate::named::Named;
 use crate::render::{AsciiStyle, DEFAULT_CHARSET, Mode};
+use crate::template;
 
-/// A text block the full config can hold, and the question that keeps it.
-struct Block {
-    /// The text before the content, such as `Host`.
-    label: &'static str,
-    /// What the block shows after its label, such as `{hostname}`.
-    content: &'static str,
-    /// The question whose yes keeps the block, without its `[Y/n]`.
-    question: &'static str,
+/// The variables interactive init asks about, in order, each as
+/// `Show <variable>? [Y/n]: `; a no drops the blocks that need its yes.
+const QUESTIONS: [&str; 7] = [
+    "{hostname}",
+    "{os}",
+    "{cpu}",
+    "{gpu}",
+    "{ram}",
+    "{disk}",
+    "{uptime}",
+];
+const HOSTNAME: usize = 0;
+const OS: usize = 1;
+const CPU: usize = 2;
+const GPU: usize = 3;
+const RAM: usize = 4;
+const DISK: usize = 5;
+const UPTIME: usize = 6;
+
+/// The content of the minimal config's one block.
+const MINIMAL_CONTENT: &str = "Host: {hostname}";
+
+/// What a block of the full config shows.
+#[derive(Clone, Copy)]
+enum Look {
+    /// A `title` block.
+    Title,
+    /// A text block: its label, its icon and what it shows after them.
+    Row {
+        label: &'static str,
+        icon: char,
+        content: &'static str,
+    },
+    /// A `dots` block.
+    Dots,
 }
 
-impl Block {
-    /// The block's text, such as `Host: {hostname}`.
-    fn text(&self) -> String {
-        format!("{}: {}", self.label, self.content)
+/// The answers that keep a block of the full config, each question an index
+/// into [`QUESTIONS`].
+#[derive(Clone, Copy)]
+enum Keep {
+    /// None: the block is always written.
+    Always,
+    /// A yes to the question.
+    Yes(usize),
+    /// Yes to `{cpu}` and to `{gpu}`, which have the same value.
+    SameChip,
+    /// A yes to the question, `{cpu}` or `{gpu}`, unless [`Keep::SameChip`]
+    /// keeps the chip block in its place.
+    OwnChip(usize),
+}
+
+/// A block of the full config and the answers that keep it.
+struct Entry {
+    look: Look,
+    keep: Keep,
+}
+
+/// The entry of a text block labelled `label` with `icon`, showing
+/// `content`.
+const fn row(label: &'static str, icon: char, content: &'static str, keep: Keep) -> Entry {
+    Entry {
+        look: Look::Row {
+            label,
+            icon,
+            content,
+        },
+        keep,
     }
 }
 
-/// The blocks init writes, in order; the first is the minimal config's.
-const BLOCKS: [Block; 7] = [
-    Block {
-        label: "Host",
-        content: "{hostname}",
-        question: "Show {hostname}?",
+/// The blocks the full config can hold, in order (D13), with the Nerd Font
+/// icons of D14.
+const ENTRIES: [Entry; 11] = [
+    Entry {
+        look: Look::Title,
+        keep: Keep::Yes(HOSTNAME),
     },
-    Block {
-        label: "OS",
-        content: "{os}",
-        question: "Show {os}?",
-    },
-    Block {
-        label: "CPU",
-        content: "{cpu}",
-        question: "Show {cpu}?",
-    },
-    Block {
-        label: "GPU",
-        content: "{gpu}",
-        question: "Show {gpu}?",
-    },
-    Block {
-        label: "RAM",
-        content: "{ram}",
-        question: "Show {ram}?",
-    },
-    Block {
-        label: "Disk",
-        content: "{disk}",
-        question: "Show {disk}?",
-    },
-    Block {
-        label: "Uptime",
-        content: "{uptime}",
-        question: "Show {uptime}?",
+    row("os", '\u{F108}', "{os}", Keep::Yes(OS)),
+    row("chip", '\u{F2DB}', "{cpu}", Keep::SameChip),
+    row("cpu", '\u{F2DB}', "{cpu}", Keep::OwnChip(CPU)),
+    row("gpu", '\u{F26C}', "{gpu}", Keep::OwnChip(GPU)),
+    row("ram", '\u{F0E4}', "{ram_meter}", Keep::Yes(RAM)),
+    row("disk", '\u{F0A0}', "{disk_meter}", Keep::Yes(DISK)),
+    row("up", '\u{F254}', "{uptime}", Keep::Yes(UPTIME)),
+    row("date", '\u{F073}', "{date}", Keep::Always),
+    row("time", '\u{F017}', "{time} · {week}", Keep::Always),
+    Entry {
+        look: Look::Dots,
+        keep: Keep::Always,
     },
 ];
+
+/// The entries of [`ENTRIES`] that `settings` keep, in order. Only when
+/// `settings` keep both `{cpu}` and `{gpu}` is `cpu_and_gpu` called, for
+/// their values, which choose the chip block or the cpu and gpu blocks
+/// (D12).
+fn entries<'a>(
+    settings: &Settings,
+    cpu_and_gpu: impl FnOnce() -> (&'a str, &'a str),
+) -> Vec<&'static Entry> {
+    let shown = settings.shown;
+    let same_chip = shown[CPU] && shown[GPU] && {
+        let (cpu, gpu) = cpu_and_gpu();
+        cpu == gpu
+    };
+    ENTRIES
+        .iter()
+        .filter(|entry| match entry.keep {
+            Keep::Always => true,
+            Keep::Yes(question) => shown[question],
+            Keep::SameChip => same_chip,
+            Keep::OwnChip(question) => shown[question] && !same_chip,
+        })
+        .collect()
+}
+
+/// The blocks of the full config [`full`] writes for `settings` and
+/// `cpu_and_gpu`, in order.
+pub fn blocks<'a>(
+    settings: &Settings,
+    cpu_and_gpu: impl FnOnce() -> (&'a str, &'a str),
+) -> Vec<Block> {
+    entries(settings, cpu_and_gpu)
+        .into_iter()
+        .map(|entry| match entry.look {
+            Look::Title => Block::Title,
+            Look::Row {
+                label,
+                icon,
+                content,
+            } => Block::Text(TextBlock {
+                text: BlockText::Content(
+                    template::parse(content).expect("init's contents are templates"),
+                ),
+                style: Style::default(),
+                color: None,
+                label: Some(label.to_owned()),
+                icon: Some(icon.to_string()),
+            }),
+            Look::Dots => Block::Dots,
+        })
+        .collect()
+}
 
 /// What the full config sets that init can ask for.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -72,19 +165,20 @@ pub struct Settings {
     pub mode: Mode,
     pub ascii_style: AsciiStyle,
     pub width: u32,
-    /// Whether each block of [`BLOCKS`] is written, in their order.
-    pub shown: [bool; BLOCKS.len()],
+    /// Whether each question of [`QUESTIONS`] is answered yes, in their
+    /// order.
+    pub shown: [bool; QUESTIONS.len()],
 }
 
 impl Default for Settings {
-    /// The config defaults, every block shown.
+    /// The config defaults, every question answered yes.
     fn default() -> Self {
         let encode = Encode::default();
         Self {
             mode: encode.mode,
             ascii_style: encode.ascii_style,
             width: encode.width,
-            shown: [true; BLOCKS.len()],
+            shown: [true; QUESTIONS.len()],
         }
     }
 }
@@ -192,31 +286,67 @@ fn toml_value(value: impl Into<toml::Value>) -> String {
 
 /// The full config: every key with its value and a comment line above it,
 /// `[banner].image` set to `image`, the mode, ascii style and width of
-/// `settings`, each block `settings` shows, and commented-out
-/// examples of the other block keys.
-pub fn full(image: &str, settings: &Settings) -> String {
+/// `settings`, the blocks [`blocks`] makes of `settings` and `cpu_and_gpu`,
+/// and commented-out examples of the other block keys.
+pub fn full<'a>(
+    image: &str,
+    settings: &Settings,
+    cpu_and_gpu: impl FnOnce() -> (&'a str, &'a str),
+) -> String {
     let encode = settings.encode();
     let mut blocks = String::new();
-    let shown = BLOCKS
-        .iter()
-        .zip(settings.shown)
-        .filter(|&(_, shown)| shown)
-        .map(|(block, _)| block.text());
-    for (index, content) in shown.enumerate() {
+    let (mut first_kind, mut first_row) = (true, true);
+    for entry in entries(settings, cpu_and_gpu) {
         blocks.push_str("[[banner.text.blocks]]\n");
-        if index == 0 {
-            blocks.push_str(
-                "# The text, with variables such as {hostname} and {cmd:...} for a\n\
-                 # command's output.\n",
-            );
+        let kind = match entry.look {
+            Look::Title => Some(Kind::Title),
+            Look::Dots => Some(Kind::Dots),
+            Look::Row { .. } => None,
+        };
+        if let Some(kind) = kind {
+            if first_kind {
+                blocks.push_str(&format!(
+                    "# The block's kind: {}. A title shows the user at the\n\
+                     # host over a rule, dots one dot per art colour; neither holds other keys.\n",
+                    Kind::one_of()
+                ));
+                first_kind = false;
+            }
+            blocks.push_str(&format!("kind = {}\n", toml_value(kind.name())));
         }
-        blocks.push_str(&format!("content = {}\n", toml_value(content)));
-        if index == 0 {
-            blocks.push_str(&format!(
-                "# The style: {}.\nstyle = {}\n",
-                Style::one_of(),
-                toml_value(Style::default().name())
-            ));
+        if let Look::Row {
+            label,
+            icon,
+            content,
+        } = entry.look
+        {
+            if first_row {
+                blocks.push_str("# A label and icon start the block, in the art's colours.\n");
+            }
+            blocks.push_str(&format!("label = {}\n", toml_value(label)));
+            if first_row {
+                blocks.push_str(
+                    "# The icon: a Nerd Font code point, found on the Nerd Font cheat sheet\n\
+                     # (nerdfonts.com/cheat-sheet).\n",
+                );
+            }
+            // As a TOML escape, so the file reads well without a Nerd Font.
+            blocks.push_str(&format!("icon = \"\\u{:04X}\"\n", u32::from(icon)));
+            if first_row {
+                blocks.push_str(
+                    "# The text, with variables such as {hostname} and {cmd:...} for a\n\
+                     # command's output.\n",
+                );
+            }
+            blocks.push_str(&format!("content = {}\n", toml_value(content)));
+            if first_row {
+                blocks.push_str(&format!(
+                    "# The style: {}.\nstyle = {}\n",
+                    Style::one_of(),
+                    toml_value(Style::default().name())
+                ));
+                first_row = false;
+            }
         }
         blocks.push('\n');
     }
@@ -248,18 +378,23 @@ padding = {padding}
 align = {align}
 # Where the text panel sits beside the art: {valigns}.
 valign = {valign}
+# Icons need a Nerd Font: false switches them off when they show as boxes.
+icons = true
 
-# The text panel: one block per line, in order. Each block holds exactly one of
-# content and command.
+# The text panel: its blocks, in order. A text block, the default kind, holds
+# exactly one of content and command.
 {blocks}\
 # A block can show a command's output inside its text:
 # [[banner.text.blocks]]
+# label = \"shell\"
 # content = {cmd_example}
 #
 # or as the whole block, run through sh -c with a 3-second limit:
 # [[banner.text.blocks]]
+# label = \"day\"
 # command = {command_example}
-# The colour as #RRGGBB; left out, the text keeps the terminal's colour.
+# The colour as #RRGGBB; left out, the text keeps the terminal's colour. On a
+# block with a label or icon, it colours the label, not the text.
 # color = {color_example}
 ",
         modes = Mode::one_of(),
@@ -274,21 +409,20 @@ valign = {valign}
         aligns = Align::one_of(),
         align = toml_value(Align::default().name()),
         valigns = Valign::one_of(),
-        valign = toml_value(Valign::default().name()),
-        cmd_example = toml_value("Shell: {cmd:basename \"$SHELL\"}"),
+        valign = toml_value(Valign::Center.name()),
+        cmd_example = toml_value("{cmd:basename \"$SHELL\"}"),
         command_example = toml_value("date '+%A, %d %B'"),
         color_example = toml_value("#87AFFF"),
     )
 }
 
-/// The minimal config: `[banner].image` set to `image` and the
-/// `{hostname}` block.
+/// The minimal config: `[banner].image` set to `image` and the one block of
+/// [`MINIMAL_CONTENT`].
 pub fn minimal(image: &str) -> String {
-    let host = BLOCKS[0].text();
     format!(
         "[banner]\nimage = {}\n\n[[banner.text.blocks]]\ncontent = {}\n",
         toml_value(image),
-        toml_value(host)
+        toml_value(MINIMAL_CONTENT)
     )
 }
 
@@ -366,8 +500,8 @@ pub fn ask_settings(
     let question = format!("Width in columns [{}]: ", defaults.width);
     let width = parse_width(&ask(input, output, &question)?, defaults.width)?;
     let mut shown = defaults.shown;
-    for (show, block) in shown.iter_mut().zip(&BLOCKS) {
-        let question = format!("{} [Y/n]: ", block.question);
+    for (show, variable) in shown.iter_mut().zip(QUESTIONS) {
+        let question = format!("Show {variable}? [Y/n]: ");
         *show = parse_yes_no(&ask(input, output, &question)?, *show)?;
     }
     Ok(Settings {
@@ -461,7 +595,7 @@ mod tests {
 
     #[test]
     fn full_config_says_left_out_keys_take_their_default() {
-        let text = full("~/art.ansi", &Settings::default());
+        let text = full("~/art.ansi", &Settings::default(), || ("cpu", "gpu"));
 
         assert_eq!(
             text.lines().next(),

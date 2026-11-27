@@ -26,6 +26,7 @@ use crate::named::Named;
 use crate::palette;
 use crate::render::{self, AsciiStyle, Charset, Mode};
 use crate::size::{self, Fit, Sizing, TooLarge};
+use crate::sysinfo::StaticVariable::{self, Cpu, Gpu};
 use crate::text;
 
 /// Follows every error jaci reports.
@@ -296,6 +297,7 @@ fn run(cli: Cli) -> Result<(), CliError> {
         Command::Cache => Ok(cache::refresh(
             &config::load(&folder, &home)?,
             &folder.join(cache::FILE_NAME),
+            StaticVariable::resolve,
         )?),
         Command::Banner(args) => banner(&args, &config::load(&folder, &home)?, &folder),
         Command::Init(args) => init(args, &folder, &home),
@@ -340,10 +342,16 @@ fn init(args: InitArgs, folder: &Path, home: &Path) -> Result<(), CliError> {
     let encode = settings.encode();
     let fit = size::fit(&image, encode.mode, &config_sizing(&encode))?;
     let art = init::image_value(&folder.join(config::DEFAULT_IMAGE), home)?;
+    // The `{cpu}` and `{gpu}` values the full config's blocks were chosen
+    // with, if it needed them, reused for the cache (D12).
+    let mut cpu_and_gpu = None;
     let text = if args.minimal {
         init::minimal(&art)
     } else {
-        init::full(&art, &settings)
+        init::full(&art, &settings, || {
+            let (cpu, gpu) = cpu_and_gpu.insert((Cpu.resolve(), Gpu.resolve()));
+            (cpu.as_str(), gpu.as_str())
+        })
     };
     atomic_file::write(&config_path, text.as_bytes()).map_err(|source| InitError::Write {
         path: config_path,
@@ -358,7 +366,19 @@ fn init(args: InitArgs, folder: &Path, home: &Path) -> Result<(), CliError> {
         encode.charset.as_ref(),
         &config.banner.image,
     )?;
-    Ok(cache::refresh(&config, &folder.join(cache::FILE_NAME))?)
+    let (mut cpu, mut gpu) = cpu_and_gpu.unzip();
+    Ok(cache::refresh(
+        &config,
+        &folder.join(cache::FILE_NAME),
+        |variable| {
+            match variable {
+                Cpu => cpu.take(),
+                Gpu => gpu.take(),
+                _ => None,
+            }
+            .unwrap_or_else(|| variable.resolve())
+        },
+    )?)
 }
 
 /// Prints the art beside the text panel, sized for the terminal, after
@@ -367,7 +387,7 @@ fn init(args: InitArgs, folder: &Path, home: &Path) -> Result<(), CliError> {
 fn banner(args: &BannerArgs, config: &Config, folder: &Path) -> Result<(), CliError> {
     let cache_path = folder.join(cache::FILE_NAME);
     if args.refresh_cache {
-        cache::refresh(config, &cache_path)?;
+        cache::refresh(config, &cache_path, StaticVariable::resolve)?;
     }
     let art = match art_file::read(args.art.as_deref().unwrap_or(&config.banner.image)) {
         Ok(art) => Some(art),

@@ -546,6 +546,24 @@ fn icons_switched_off() {
 }
 
 #[test]
+fn label_and_icon_controls_and_other_escapes_are_removed() {
+    let blocks = vec![
+        labelled("a\nb\x1b[2J", Some("\u{7}\u{F108}"), content_block("1")),
+        labelled("cd", None, content_block("2")),
+    ];
+
+    let lines = text::resolve(&panel(blocks), &Cache::default(), &[TERRACOTTA], 40);
+
+    assert_eq!(
+        lines,
+        [
+            "\x1b[1m\x1b[38;2;204;110;77m\u{F108} ab\x1b[0m  1",
+            "\x1b[1m\x1b[38;2;204;110;77m  cd\x1b[0m  2",
+        ]
+    );
+}
+
+#[test]
 fn title_shows_user_at_host() {
     let blocks = vec![Block::Title, content_block(&"x".repeat(26))];
 
