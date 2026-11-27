@@ -109,3 +109,26 @@ fn cache_command_writes_user() {
         assert_eq!(cache.get(variable), None, "{}", variable.name());
     }
 }
+
+#[test]
+fn cache_command_saves_title_variables() {
+    let env = Env::with_config("[[banner.text.blocks]]\nkind = \"title\"\n");
+
+    let output = env.jaci(&["cache"]);
+
+    assert_quiet_success(&output);
+    let cache = read_cache(&env.cache_path());
+    for variable in [User, Hostname] {
+        assert!(
+            cache.get(variable).is_some_and(|value| !value.is_empty()),
+            "{}",
+            variable.name()
+        );
+    }
+    for &variable in StaticVariable::ALL
+        .iter()
+        .filter(|&&variable| variable != User && variable != Hostname)
+    {
+        assert_eq!(cache.get(variable), None, "{}", variable.name());
+    }
+}

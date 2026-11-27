@@ -2,7 +2,9 @@ use std::ffi::OsStr;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use jaci::config::{self, Align, Banner, Block, BlockText, Config, Encode, Style, Text, Valign};
+use jaci::config::{
+    self, Align, Banner, Block, BlockText, Config, Encode, Style, Text, TextBlock, Valign,
+};
 use jaci::render::{AsciiStyle, Charset, Mode};
 use jaci::template::Segment;
 use tempfile::TempDir;
@@ -62,6 +64,7 @@ fn missing_config_gives_defaults() {
                 text: Text {
                     align: Align::Left,
                     valign: Valign::Top,
+                    icons: true,
                     blocks: Vec::new(),
                 },
             },
@@ -115,20 +118,25 @@ style = "dim"
                 text: Text {
                     align: Align::Right,
                     valign: Valign::Center,
+                    icons: true,
                     blocks: vec![
-                        Block {
+                        Block::Text(TextBlock {
                             text: BlockText::Content(vec![
                                 Segment::Text("Shell: ".to_owned()),
                                 Segment::Command("basename $SHELL".to_owned()),
                             ]),
                             style: Style::Bold,
                             color: Some([0x12, 0xAB, 0x34]),
-                        },
-                        Block {
+                            label: None,
+                            icon: None,
+                        }),
+                        Block::Text(TextBlock {
                             text: BlockText::Command("date".to_owned()),
                             style: Style::Dim,
                             color: None,
-                        },
+                            label: None,
+                            icon: None,
+                        }),
                     ],
                 },
             },
@@ -251,4 +259,91 @@ fn image_path_expands_home() {
     let (_folder, _path, config) = load("[banner]\nimage = \"~/art.ansi\"\n");
 
     assert_eq!(config.unwrap().banner.image, Path::new("/h/art.ansi"));
+}
+
+#[test]
+fn unknown_kind_refused() {
+    let (path, message) = load_error("[[banner.text.blocks]]\nkind = \"card\"\n");
+
+    assert_eq!(
+        message,
+        format!(
+            "jaci: config {}: line 2: banner.text.blocks[1].kind must be one of text, title, dots",
+            path.display()
+        )
+    );
+}
+
+#[test]
+fn title_block_with_content_refused() {
+    let (path, message) =
+        load_error("[[banner.text.blocks]]\nkind = \"title\"\ncontent = \"hi\"\n");
+
+    assert_eq!(
+        message,
+        format!(
+            "jaci: config {}: line 3: banner.text.blocks[1].content is not allowed in a title block",
+            path.display()
+        )
+    );
+}
+
+#[test]
+fn icons_must_be_true_or_false() {
+    let (path, message) = load_error("[banner.text]\nicons = \"no\"\n");
+
+    assert_eq!(
+        message,
+        format!(
+            "jaci: config {}: line 2: banner.text.icons must be true or false",
+            path.display()
+        )
+    );
+}
+
+#[test]
+fn labelled_block_still_needs_text() {
+    let (path, message) = load_error("[[banner.text.blocks]]\nlabel = \"os\"\n");
+
+    assert_eq!(
+        message,
+        format!(
+            "jaci: config {}: line 1: banner.text.blocks[1] needs exactly one of content and command",
+            path.display()
+        )
+    );
+}
+
+#[test]
+fn new_block_keys_load() {
+    let (_folder, _path, config) = load(
+        r#"
+[banner.text]
+icons = false
+
+[[banner.text.blocks]]
+kind = "title"
+
+[[banner.text.blocks]]
+label = "os"
+icon = "\uF108"
+content = "{os}"
+"#,
+    );
+
+    let text = config.unwrap_or_else(|error| panic!("{error}")).banner.text;
+    assert!(!text.icons);
+    assert_eq!(
+        text.blocks,
+        [
+            Block::Title,
+            Block::Text(TextBlock {
+                text: BlockText::Content(vec![Segment::Text("{os}".to_owned())]),
+                style: Style::Normal,
+                color: None,
+                label: Some("os".to_owned()),
+                icon: Some("\u{F108}".to_owned()),
+            }),
+        ]
+    );
 }
