@@ -9,27 +9,62 @@ use std::path::{Path, PathBuf};
 use crate::config::{self, Align, DEFAULT_PADDING, Encode, HOME_PREFIX, Style, Valign};
 use crate::named::Named;
 use crate::render::{AsciiStyle, DEFAULT_CHARSET, Mode};
-use crate::sysinfo::{DynamicVariable, StaticVariable};
 
-/// One text block per built-in variable.
-pub const BLOCK_COUNT: usize = StaticVariable::ALL.len() + DynamicVariable::ALL.len();
-/// Each block's label, in the order of [`variable_names`].
-const LABELS: [&str; BLOCK_COUNT] = ["Host", "OS", "CPU", "GPU", "RAM", "Disk", "Uptime"];
-
-/// The built-in variables' names: the static ones, then the dynamic ones.
-fn variable_names() -> impl Iterator<Item = &'static str> {
-    let statics = StaticVariable::ALL.iter().map(|variable| variable.name());
-    let dynamics = DynamicVariable::ALL.iter().map(|variable| variable.name());
-    statics.chain(dynamics)
+/// A text block the full config can hold, and the question that keeps it.
+struct Block {
+    /// The text before the content, such as `Host`.
+    label: &'static str,
+    /// What the block shows after its label, such as `{hostname}`.
+    content: &'static str,
+    /// The question whose yes keeps the block, without its `[Y/n]`.
+    question: &'static str,
 }
 
-/// The text of each built-in variable's block, such as `Host: {hostname}`.
-fn block_contents() -> impl Iterator<Item = String> {
-    LABELS
-        .into_iter()
-        .zip(variable_names())
-        .map(|(label, name)| format!("{label}: {{{name}}}"))
+impl Block {
+    /// The block's text, such as `Host: {hostname}`.
+    fn text(&self) -> String {
+        format!("{}: {}", self.label, self.content)
+    }
 }
+
+/// The blocks init writes, in order; the first is the minimal config's.
+const BLOCKS: [Block; 7] = [
+    Block {
+        label: "Host",
+        content: "{hostname}",
+        question: "Show {hostname}?",
+    },
+    Block {
+        label: "OS",
+        content: "{os}",
+        question: "Show {os}?",
+    },
+    Block {
+        label: "CPU",
+        content: "{cpu}",
+        question: "Show {cpu}?",
+    },
+    Block {
+        label: "GPU",
+        content: "{gpu}",
+        question: "Show {gpu}?",
+    },
+    Block {
+        label: "RAM",
+        content: "{ram}",
+        question: "Show {ram}?",
+    },
+    Block {
+        label: "Disk",
+        content: "{disk}",
+        question: "Show {disk}?",
+    },
+    Block {
+        label: "Uptime",
+        content: "{uptime}",
+        question: "Show {uptime}?",
+    },
+];
 
 /// What the full config sets that init can ask for.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -37,9 +72,8 @@ pub struct Settings {
     pub mode: Mode,
     pub ascii_style: AsciiStyle,
     pub width: u32,
-    /// Whether each built-in variable's block is written, in the order of
-    /// the variables.
-    pub shown: [bool; BLOCK_COUNT],
+    /// Whether each block of [`BLOCKS`] is written, in their order.
+    pub shown: [bool; BLOCKS.len()],
 }
 
 impl Default for Settings {
@@ -50,7 +84,7 @@ impl Default for Settings {
             mode: encode.mode,
             ascii_style: encode.ascii_style,
             width: encode.width,
-            shown: [true; BLOCK_COUNT],
+            shown: [true; BLOCKS.len()],
         }
     }
 }
@@ -158,14 +192,16 @@ fn toml_value(value: impl Into<toml::Value>) -> String {
 
 /// The full config: every key with its value and a comment line above it,
 /// `[banner].image` set to `image`, the mode, ascii style and width of
-/// `settings`, a block for each variable `settings` shows, and commented-out
+/// `settings`, each block `settings` shows, and commented-out
 /// examples of the other block keys.
 pub fn full(image: &str, settings: &Settings) -> String {
     let encode = settings.encode();
     let mut blocks = String::new();
-    let shown = block_contents()
+    let shown = BLOCKS
+        .iter()
         .zip(settings.shown)
-        .filter_map(|(content, shown)| shown.then_some(content));
+        .filter(|&(_, shown)| shown)
+        .map(|(block, _)| block.text());
     for (index, content) in shown.enumerate() {
         blocks.push_str("[[banner.text.blocks]]\n");
         if index == 0 {
@@ -248,9 +284,7 @@ valign = {valign}
 /// The minimal config: `[banner].image` set to `image` and the
 /// `{hostname}` block.
 pub fn minimal(image: &str) -> String {
-    let host = block_contents()
-        .next()
-        .expect("the first built-in variable is the host name");
+    let host = BLOCKS[0].text();
     format!(
         "[banner]\nimage = {}\n\n[[banner.text.blocks]]\ncontent = {}\n",
         toml_value(image),
@@ -300,8 +334,7 @@ pub fn ask_image(
 }
 
 /// Asks for the render mode, the ascii style when that mode is ascii, the
-/// width, then whether to show each built-in variable, an empty answer
-/// taking the default.
+/// width, then each block's question, an empty answer taking the default.
 ///
 /// # Errors
 ///
@@ -333,8 +366,8 @@ pub fn ask_settings(
     let question = format!("Width in columns [{}]: ", defaults.width);
     let width = parse_width(&ask(input, output, &question)?, defaults.width)?;
     let mut shown = defaults.shown;
-    for (show, name) in shown.iter_mut().zip(variable_names()) {
-        let question = format!("Show {{{name}}}? [Y/n]: ");
+    for (show, block) in shown.iter_mut().zip(&BLOCKS) {
+        let question = format!("{} [Y/n]: ", block.question);
         *show = parse_yes_no(&ask(input, output, &question)?, *show)?;
     }
     Ok(Settings {
