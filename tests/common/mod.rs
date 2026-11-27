@@ -185,6 +185,22 @@ pub fn read_art(path: &Path) -> Art {
     art_file::read(path).unwrap_or_else(|error| panic!("{error}"))
 }
 
+/// `text` read without its escapes, each `ESC [`, the parameters and the
+/// final letter left out.
+#[allow(dead_code)]
+pub fn plain(text: &str) -> String {
+    let mut plain = String::new();
+    let mut chars = text.chars();
+    while let Some(c) = chars.next() {
+        if c == '\x1b' {
+            chars.by_ref().find(char::is_ascii_alphabetic);
+        } else {
+            plain.push(c);
+        }
+    }
+    plain
+}
+
 /// A config whose text blocks are the `content` of each of `contents`.
 #[allow(dead_code)]
 pub fn config_with(contents: &[&str]) -> String {

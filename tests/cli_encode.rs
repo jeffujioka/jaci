@@ -6,7 +6,7 @@ mod common;
 use std::fs;
 use std::path::Path;
 
-use common::{Env, HELP_LINE, read_art, stderr};
+use common::{Env, HELP_LINE, plain, read_art, stderr};
 use tempfile::TempDir;
 
 const IMAGE: &str = "test_fixtures/4x4.png";
@@ -247,7 +247,7 @@ fn charset_from_config_then_option() {
         let output = env.jaci(&[&["encode"], args, &[IMAGE]].concat());
 
         assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
-        let glyphs = visible(&read(&env.art_path()));
+        let glyphs = plain(&read(&env.art_path()));
         assert!(glyphs.contains(glyph), "{glyphs:?}");
         assert!(
             glyphs.chars().all(|c| [glyph, ' ', '\n'].contains(&c)),
@@ -301,7 +301,7 @@ fn charset_beats_the_dense_style() {
         let output = env.jaci(&[&["encode"], args, &[IMAGE]].concat());
 
         assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
-        let glyphs = visible(&read(&env.art_path()));
+        let glyphs = plain(&read(&env.art_path()));
         assert!(glyphs.contains('#'), "{glyphs:?}");
         assert!(
             glyphs.chars().all(|c| ['#', ' ', '\n'].contains(&c)),
@@ -353,18 +353,4 @@ fn unknown_ascii_style_is_a_usage_error() {
 
 fn read(path: &Path) -> String {
     fs::read_to_string(path).unwrap()
-}
-
-/// `text` without its escape sequences, each `ESC [` up to an `m`.
-fn visible(text: &str) -> String {
-    let mut visible = String::new();
-    let mut chars = text.chars();
-    while let Some(c) = chars.next() {
-        if c == '\x1b' {
-            chars.by_ref().find(|&c| c == 'm');
-        } else {
-            visible.push(c);
-        }
-    }
-    visible
 }
