@@ -10,7 +10,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use crate::atomic_file;
-use crate::config::{BlockText, Config};
+use crate::config::{Block, BlockText, Config, TextBlock};
 use crate::named::Named;
 use crate::sysinfo::StaticVariable;
 use crate::template::{self, Segment};
@@ -131,25 +131,29 @@ pub fn write(path: &Path, cache: &Cache) -> Result<(), CacheError> {
 
 /// The static variables that the config's text blocks use, in the order of
 /// [`StaticVariable::ALL`]: those named by a placeholder in the literal text
-/// of a block's `content`, never in a command.
+/// of a text block's `content`, never in a command, and `user` and
+/// `hostname` for a title block.
 pub fn used_variables(config: &Config) -> Vec<StaticVariable> {
-    let named: Vec<StaticVariable> = config
-        .banner
-        .text
-        .blocks
-        .iter()
-        .filter_map(|block| match &block.text {
-            BlockText::Content(segments) => Some(segments),
-            BlockText::Command(_) => None,
-        })
-        .flatten()
-        .filter_map(|segment| match segment {
-            Segment::Text(text) => Some(text),
-            Segment::Command(_) => None,
-        })
-        .flat_map(|text| template::placeholders(text))
-        .filter_map(|placeholder| StaticVariable::from_name(placeholder.name))
-        .collect();
+    let mut named = Vec::new();
+    for block in &config.banner.text.blocks {
+        match block {
+            Block::Text(TextBlock {
+                text: BlockText::Content(segments),
+                ..
+            }) => named.extend(
+                segments
+                    .iter()
+                    .filter_map(|segment| match segment {
+                        Segment::Text(text) => Some(text),
+                        Segment::Command(_) => None,
+                    })
+                    .flat_map(|text| template::placeholders(text))
+                    .filter_map(|placeholder| StaticVariable::from_name(placeholder.name)),
+            ),
+            Block::Title => named.extend([StaticVariable::User, StaticVariable::Hostname]),
+            Block::Text(_) | Block::Dots => {}
+        }
+    }
     StaticVariable::ALL
         .iter()
         .copied()

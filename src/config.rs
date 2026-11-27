@@ -90,12 +90,25 @@ pub struct Banner {
 }
 
 /// `[banner.text]`.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Text {
     pub align: Align,
     pub valign: Valign,
+    /// `false` switches every block's icon off.
+    pub icons: bool,
     /// In the order of the file.
     pub blocks: Vec<Block>,
+}
+
+impl Default for Text {
+    fn default() -> Self {
+        Self {
+            align: Align::default(),
+            valign: Valign::default(),
+            icons: true,
+            blocks: Vec::new(),
+        }
+    }
 }
 
 /// `banner.text.align`.
@@ -142,13 +155,47 @@ impl Named for Valign {
     }
 }
 
-/// One `[[banner.text.blocks]]` entry.
+/// One `[[banner.text.blocks]]` entry, of the kind its `kind` names.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Block {
+pub enum Block {
+    /// `kind = "text"`, the default.
+    Text(TextBlock),
+    /// `kind = "title"`: the user at the host, over a rule.
+    Title,
+    /// `kind = "dots"`: one dot per palette colour.
+    Dots,
+}
+
+/// A text block: its text, how it looks and what labels it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TextBlock {
     pub text: BlockText,
     pub style: Style,
     /// `R`, `G` and `B`; `None` keeps the terminal's colour.
     pub color: Option<[u8; 3]>,
+    pub label: Option<String>,
+    pub icon: Option<String>,
+}
+
+/// `banner.text.blocks[n].kind`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Kind {
+    Text,
+    Title,
+    Dots,
+}
+
+impl Named for Kind {
+    /// In the order the messages list them.
+    const ALL: &'static [Self] = &[Self::Text, Self::Title, Self::Dots];
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::Text => "text",
+            Self::Title => "title",
+            Self::Dots => "dots",
+        }
+    }
 }
 
 /// Where a block's text comes from: exactly one of `content` and `command`.
@@ -254,9 +301,10 @@ impl Error for ConfigError {
 ///
 /// [`ConfigError::Read`] when the file exists but cannot be read,
 /// [`ConfigError::Syntax`] when it is not TOML and [`ConfigError::Invalid`]
-/// for an unknown key, a value the key does not allow, a text block without
-/// exactly one of `content` and `command`, an unclosed or blank `{cmd:`, or a
-/// blank `command`; blank is empty or only whitespace.
+/// for an unknown key, a value the key does not allow, a title or dots block
+/// with any key but `kind`, a text block without exactly one of `content` and
+/// `command`, an unclosed or blank `{cmd:`, or a blank `command`; blank is
+/// empty or only whitespace.
 pub fn load(folder: &Path, home: &Path) -> Result<Config, ConfigError> {
     let path = folder.join(FILE_NAME);
     let mut config = Config {
@@ -371,6 +419,12 @@ fn read_text(table: &DeTable<'_>, text: &mut Text) -> Result<(), Invalid> {
         match key.get_ref().as_ref() {
             "align" => text.align = named(value, "banner.text.align")?,
             "valign" => text.valign = named(value, "banner.text.valign")?,
+            "icons" => {
+                let DeValue::Boolean(icons) = value.get_ref() else {
+                    return Err(must_be(value, "banner.text.icons", "true or false"));
+                };
+                text.icons = *icons;
+            }
             "blocks" => {
                 let DeValue::Array(blocks) = value.get_ref() else {
                     return Err(must_be(value, "banner.text.blocks", "an array of tables"));
@@ -387,17 +441,51 @@ fn read_text(table: &DeTable<'_>, text: &mut Text) -> Result<(), Invalid> {
     Ok(())
 }
 
-/// Reads block `number`, counted from 1.
+/// Reads block `number`, counted from 1: a title or dots block holds no key
+/// but `kind`.
 fn read_block(value: &Value<'_>, number: usize) -> Result<Block, Invalid> {
     let scope = format!("banner.text.blocks[{number}]");
     let table = table_of(value, &scope)?;
+    let entries = entries(table);
+    let kind = match entries.iter().find(|(key, _)| key.get_ref() == "kind") {
+        Some((_, kind)) => named(kind, &format!("{scope}.kind"))?,
+        None => Kind::Text,
+    };
+    let block = match kind {
+        Kind::Text => return read_text_block(value, &entries, &scope).map(Block::Text),
+        Kind::Title => Block::Title,
+        Kind::Dots => Block::Dots,
+    };
+    match entries.iter().find(|(key, _)| key.get_ref() != "kind") {
+        Some((key, _)) => Err(Invalid::at(
+            key.span(),
+            format!(
+                "{scope}.{} is not allowed in a {} block",
+                key.get_ref(),
+                kind.name()
+            ),
+        )),
+        None => Ok(block),
+    }
+}
+
+/// Reads the `entries` of the text block `value`, whose keys are named in
+/// `scope`; its `kind` is already read.
+fn read_text_block(
+    value: &Value<'_>,
+    entries: &[(&Key<'_>, &Value<'_>)],
+    scope: &str,
+) -> Result<TextBlock, Invalid> {
     let mut content = None;
     let mut command = None;
     let mut style = Style::default();
     let mut color = None;
-    for (key, value) in entries(table) {
+    let mut label = None;
+    let mut icon = None;
+    for &(key, value) in entries {
         let name = format!("{scope}.{}", key.get_ref());
         match key.get_ref().as_ref() {
+            "kind" => {}
             "content" => {
                 let text = text(value, &name, "text with variables and {cmd:...}")?;
                 let segments = template::parse(text)
@@ -413,7 +501,9 @@ fn read_block(value: &Value<'_>, number: usize) -> Result<Block, Invalid> {
             }
             "style" => style = named(value, &name)?,
             "color" => color = Some(colour(value, &name)?),
-            _ => return Err(unknown_key(key, &scope)),
+            "label" => label = Some(text(value, &name, "text")?.to_owned()),
+            "icon" => icon = Some(text(value, &name, "text")?.to_owned()),
+            _ => return Err(unknown_key(key, scope)),
         }
     }
     let text = match (content, command) {
@@ -425,7 +515,13 @@ fn read_block(value: &Value<'_>, number: usize) -> Result<Block, Invalid> {
             ));
         }
     };
-    Ok(Block { text, style, color })
+    Ok(TextBlock {
+        text,
+        style,
+        color,
+        label,
+        icon,
+    })
 }
 
 /// The entries of `table` in the order of the file.
