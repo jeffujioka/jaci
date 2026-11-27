@@ -8,6 +8,10 @@ use unicode_width::UnicodeWidthChar;
 
 /// Ends every style and colour: `ESC[0m`.
 pub(crate) const RESET: &str = "\x1b[0m";
+/// Draws text bold: `ESC[1m`.
+pub(crate) const BOLD: &str = "\x1b[1m";
+/// Draws text dim: `ESC[2m`.
+pub(crate) const DIM: &str = "\x1b[2m";
 /// The escape character that starts every escape sequence.
 pub(crate) const ESC: &str = "\x1b";
 const ESC_BYTE: u8 = ESC.as_bytes()[0];
