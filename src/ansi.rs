@@ -133,6 +133,28 @@ fn sgr_parameters(escape: &str) -> Option<&str> {
         })
 }
 
+/// The 24-bit colours `escape` sets when it is an SGR sequence: one for each
+/// `38;2;R;G;B` or `48;2;R;G;B` group among its parameters, in order.
+pub(crate) fn colours(escape: &str) -> impl Iterator<Item = [u8; 3]> + '_ {
+    let mut parameters = sgr_parameters(escape)
+        .into_iter()
+        .flat_map(|parameters| parameters.split(';'));
+    iter::from_fn(move || {
+        loop {
+            if !matches!(parameters.next()?.parse(), Ok(FOREGROUND | BACKGROUND)) {
+                continue;
+            }
+            if parameters.next()?.parse() != Ok(2u8) {
+                continue;
+            }
+            let mut channel = || parameters.next().and_then(|channel| channel.parse().ok());
+            if let (Some(r), Some(g), Some(b)) = (channel(), channel(), channel()) {
+                return Some([r, g, b]);
+            }
+        }
+    })
+}
+
 /// The SGR sequences in effect after the text recorded so far: every one
 /// since the last reset, in order, so replaying them gives the style and
 /// colours the terminal has there.
@@ -258,5 +280,15 @@ mod tests {
         push_background(&mut text, [4, 5, 6]);
 
         assert_eq!(text, "\x1b[38;2;1;2;3m\x1b[48;2;4;5;6m");
+    }
+
+    #[test]
+    fn sgr_colours_are_24_bit_groups() {
+        let found: Vec<[u8; 3]> = ["\x1b[1;38;2;1;2;3;48;2;4;5;6m", "\x1b[38;5;7m", "\x1b(B"]
+            .into_iter()
+            .flat_map(colours)
+            .collect();
+
+        assert_eq!(found, [[1, 2, 3], [4, 5, 6]]);
     }
 }

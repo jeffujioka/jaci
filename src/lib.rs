@@ -11,6 +11,7 @@ pub mod config;
 pub mod image_input;
 pub mod init;
 pub mod named;
+pub mod palette;
 pub mod render;
 pub mod size;
 pub mod sysinfo;
