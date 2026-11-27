@@ -4,7 +4,8 @@
 
 mod common;
 
-use common::{Env, in_terminal_sized, read_art, stderr};
+use common::{Env, in_terminal_sized, plain, read_art, read_cache, stderr};
+use jaci::sysinfo::StaticVariable::{Hostname, User};
 
 /// Wide enough for the 80-column art, the padding and the full config's
 /// text panel.
@@ -36,13 +37,29 @@ fn banner_works_right_after_init() {
         );
     }
 
-    let padding = " ".repeat(usize::try_from(config.banner.padding).unwrap());
-    let text = lines[0]
-        .strip_prefix(art_rows[0].as_str())
-        .and_then(|rest| rest.strip_prefix(padding.as_str()))
-        .unwrap_or_else(|| panic!("row 1 has the art and the padding: {:?}", lines[0]));
-    let host = text
-        .strip_prefix("Host: ")
-        .unwrap_or_else(|| panic!("row 1 shows the host: {text:?}"));
-    assert!(!host.trim().is_empty(), "row 1 names the host: {text:?}");
+    let cache = read_cache(&env.cache_path());
+    let title = format!(
+        "{}@{}",
+        cache.get(User).unwrap(),
+        cache.get(Hostname).unwrap()
+    );
+    let texts: Vec<String> = lines
+        .iter()
+        .zip(art_rows)
+        .map(|(line, art_row)| plain(&line[art_row.len()..]))
+        .collect();
+    let title_row = texts
+        .iter()
+        .position(|text| text.contains(&title))
+        .unwrap_or_else(|| panic!("no row shows {title}: {texts:#?}"));
+    assert!(
+        texts[title_row + 1..].iter().any(|text| {
+            text.contains("ram")
+                && text.split_whitespace().any(|word| {
+                    word.strip_suffix('%')
+                        .is_some_and(|number| number.parse::<u8>().is_ok())
+                })
+        }),
+        "no later row shows ram and a percentage: {texts:#?}"
+    );
 }

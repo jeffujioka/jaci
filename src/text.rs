@@ -63,9 +63,11 @@ const TAB_STOP: usize = 8;
 ///
 /// All of a block's text, literal text, variable values and output alike,
 /// and a title's user and host, keep their SGR sequences and newlines, and
-/// have every tab expanded to the next stop every 8 columns of its panel
-/// line; their other escape sequences and control characters, C0, DEL and
-/// C1, are removed, so no text moves the cursor over the art.
+/// have every tab expanded to the next stop every 8 columns, counted from
+/// where the text starts on its panel line; their other escape sequences
+/// and control characters, C0, DEL and C1, are removed, so no text moves
+/// the cursor over the art. A label and an icon are cleaned the same way,
+/// and lose their newlines too, so each stays on its row.
 pub fn resolve(text: &Text, cache: &Cache, palette: &[[u8; 3]], panel_width: usize) -> Vec<String> {
     let text_blocks = || {
         text.blocks.iter().filter_map(|block| match block {
@@ -87,16 +89,28 @@ pub fn resolve(text: &Text, cache: &Cache, palette: &[[u8; 3]], panel_width: usi
     }
     let mut outputs = run_all(&commands).into_iter();
     let mut output = || outputs.next().expect("one output per command");
-    let icon_width = text_blocks()
-        .filter_map(|block| block.icon.as_deref())
+    // Each text block's icon and label, cleaned, in block order.
+    let leads: Vec<_> = text_blocks()
+        .map(|block| {
+            (
+                block.icon.as_deref().map(one_line),
+                block.label.as_deref().map(one_line),
+            )
+        })
+        .collect();
+    let icon_width = leads
+        .iter()
+        .filter_map(|(icon, _)| icon.as_deref())
         .map(ansi::visible_width)
         .max()
         .filter(|_| text.icons);
-    let label_width = text_blocks()
-        .filter_map(|block| block.label.as_deref())
+    let label_width = leads
+        .iter()
+        .filter_map(|(_, label)| label.as_deref())
         .map(ansi::visible_width)
         .max()
         .unwrap_or(0);
+    let mut leads = leads.into_iter();
     let value_column = icon_width.map_or(0, |width| width + 1) + label_width + 2;
     let colour = |index: usize| palette[index % palette.len()];
     let mut labels = 0;
@@ -140,6 +154,7 @@ pub fn resolve(text: &Text, cache: &Cache, palette: &[[u8; 3]], panel_width: usi
                 continue;
             }
         };
+        let (icon, label) = leads.next().expect("one lead per text block");
         let mut resolved = PanelText::default();
         match &block.text {
             BlockText::Content(segments) => {
@@ -152,16 +167,16 @@ pub fn resolve(text: &Text, cache: &Cache, palette: &[[u8; 3]], panel_width: usi
             }
             BlockText::Command(_) => resolved.push(&output(), Source::Output),
         }
-        if block.label.is_none() && block.icon.is_none() {
+        if label.is_none() && icon.is_none() {
             resolved.push_lines(&mut lines, "", "", &style_prefix(block.style, block.color));
             continue;
         }
-        let label = block.label.as_deref().unwrap_or("");
+        let label = label.as_deref().unwrap_or("");
         let mut lead = BOLD.to_owned();
         ansi::push_foreground(&mut lead, block.color.unwrap_or(colour(labels)));
         labels += 1;
         if let Some(width) = icon_width {
-            let icon = block.icon.as_deref().unwrap_or("");
+            let icon = icon.as_deref().unwrap_or("");
             lead.push_str(icon);
             lead.extend(iter::repeat_n(' ', width - ansi::visible_width(icon) + 1));
         }
@@ -201,6 +216,15 @@ fn push_name(title: &mut String, name: &str, colour: [u8; 3]) {
     title.push_str(RESET);
 }
 
+/// `piece` cleaned as [`PanelText`] cleans literal text, less its newlines,
+/// as a label or an icon shows on one row.
+fn one_line(piece: &str) -> String {
+    let mut cleaned = PanelText::default();
+    cleaned.push(piece, Source::Literal);
+    cleaned.text.retain(|c| c != '\n');
+    cleaned.text
+}
+
 /// The escapes that start each line of a block's text: `style`, then
 /// `colour`.
 fn style_prefix(style: Style, colour: Option<[u8; 3]>) -> String {
@@ -227,10 +251,10 @@ enum Source {
 
 /// A block's resolved text as it is built. SGR sequences and newlines stay,
 /// each tab is expanded to spaces up to the next stop of every [`TAB_STOP`]
-/// columns, counted from the start of the line the tab lands in, and every
-/// other escape sequence with its body, a lone ESC, and every other control
-/// character, C0, DEL and C1, go, so the text moves no cursor and leaves
-/// only characters and colours.
+/// columns, counted from where the text of the line the tab lands in
+/// starts, and every other escape sequence with its body, a lone ESC, and
+/// every other control character, C0, DEL and C1, go, so the text moves no
+/// cursor and leaves only characters and colours.
 #[derive(Default)]
 struct PanelText {
     text: String,

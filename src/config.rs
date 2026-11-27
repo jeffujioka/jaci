@@ -179,7 +179,7 @@ pub struct TextBlock {
 
 /// `banner.text.blocks[n].kind`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Kind {
+pub enum Kind {
     Text,
     Title,
     Dots,

@@ -88,9 +88,9 @@ pub fn of(art: &Art) -> Vec<[u8; 3]> {
         .collect()
 }
 
-fn is_grey_or_dark(colour: [u8; 3]) -> bool {
-    let largest = colour.into_iter().max().unwrap_or(0);
-    let smallest = colour.into_iter().min().unwrap_or(0);
+fn is_grey_or_dark([r, g, b]: [u8; 3]) -> bool {
+    let largest = r.max(g).max(b);
+    let smallest = r.min(g).min(b);
     largest - smallest < GREY_SPREAD || largest < DARK_LARGEST
 }
 

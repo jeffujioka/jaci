@@ -7,23 +7,16 @@ use std::fs;
 use std::os::unix::fs::symlink;
 
 use common::{Env, HELP_LINE, content_block, read_art, read_cache, stderr, stdout};
-use jaci::config::{Banner, Block, Config, Encode, Text};
+use jaci::cache;
+use jaci::config::{Banner, Block, Config, Encode, Text, Valign};
+use jaci::init::{self, Settings};
+use jaci::named::Named;
 use jaci::render::{AsciiStyle, Mode};
-use jaci::sysinfo::StaticVariable::{Cpu, Gpu, Hostname, Os};
+use jaci::sysinfo::StaticVariable::{self, Cpu, Gpu, Hostname, Os, User};
 
 const IMAGE: &str = "test_fixtures/4x4.png";
-/// The full config's text blocks, one per built-in variable (D38).
-const FULL_BLOCKS: [&str; 7] = [
-    "Host: {hostname}",
-    "OS: {os}",
-    "CPU: {cpu}",
-    "GPU: {gpu}",
-    "RAM: {ram}",
-    "Disk: {disk}",
-    "Uptime: {uptime}",
-];
 /// The keys the full config writes, each with a comment line above it.
-const COMMENTED_KEYS: [&str; 10] = [
+const COMMENTED_KEYS: [&str; 14] = [
     "mode",
     "ascii_style",
     "width",
@@ -32,6 +25,10 @@ const COMMENTED_KEYS: [&str; 10] = [
     "padding",
     "align",
     "valign",
+    "icons",
+    "kind",
+    "label",
+    "icon",
     "content",
     "style",
 ];
@@ -43,9 +40,15 @@ impl Env {
     }
 }
 
-/// Text blocks of `contents`, each in the default style and colour.
-fn blocks(contents: &[&str]) -> Vec<Block> {
-    contents.iter().copied().map(content_block).collect()
+/// The settings of `jaci init` without `-i` but for `mode`, `style` and
+/// `width`.
+fn settings(mode: Mode, style: AsciiStyle, width: u32) -> Settings {
+    Settings {
+        mode,
+        ascii_style: style,
+        width,
+        ..Settings::default()
+    }
 }
 
 /// Whether a line of `text` sets `key` right below a comment line.
@@ -57,21 +60,20 @@ fn commented(text: &str, key: &str) -> bool {
         .any(|pair| pair[0].starts_with('#') && pair[1].starts_with(&setting))
 }
 
-/// Asserts that the written config is the full config with `mode`, `style`,
-/// `width` and the text blocks of `contents`, every other key its default.
-fn assert_full_config(env: &Env, mode: Mode, style: AsciiStyle, width: u32, contents: &[&str]) {
+/// Asserts that the written config is the full config of `settings`, its
+/// blocks made with `{cpu}` and `{gpu}` as this test resolves them, every
+/// other key its default.
+fn assert_full_config(env: &Env, settings: &Settings) {
+    let (cpu, gpu) = (Cpu.resolve(), Gpu.resolve());
     let expected = Config {
-        encode: Encode {
-            mode,
-            ascii_style: style,
-            width,
-            ..Encode::default()
-        },
+        encode: settings.encode(),
         banner: Banner {
             image: env.art_path(),
             padding: 4,
             text: Text {
-                blocks: blocks(contents),
+                valign: Valign::Center,
+                icons: true,
+                blocks: init::blocks(settings, || (&cpu, &gpu)),
                 ..Text::default()
             },
         },
@@ -107,11 +109,32 @@ fn init_sets_everything_up() {
     assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
     assert!(output.stdout.is_empty());
     assert!(output.stderr.is_empty());
-    assert_full_config(&env, Mode::Ascii, AsciiStyle::Bright, 80, &FULL_BLOCKS);
+    assert_full_config(&env, &Settings::default());
     assert_eq!(read_art(&env.art_path()).columns(), 80);
+    let config = env.config();
+    assert_eq!(config.banner.text.valign, Valign::Center);
+    assert!(config.banner.text.icons);
+    let blocks = &config.banner.text.blocks;
+    assert_eq!(blocks.first(), Some(&Block::Title));
+    assert_eq!(blocks.last(), Some(&Block::Dots));
+    let text = env.config_text();
+    let lines: Vec<&str> = text.lines().collect();
+    assert!(lines.contains(&r#"icon = "\uF108""#), "{text}");
+    assert!(
+        lines.windows(2).any(|pair| pair[0].starts_with('#')
+            && pair[0].contains("Nerd Font")
+            && pair[1] == "icons = true"),
+        "no Nerd Font comment above icons:\n{text}"
+    );
     let cache = read_cache(&env.cache_path());
-    for variable in [Hostname, Os, Cpu, Gpu] {
-        assert!(cache.get(variable).is_some(), "{variable:?} is not cached");
+    let used = cache::used_variables(&config);
+    assert!(used.contains(&User) && used.contains(&Hostname), "{used:?}");
+    for &variable in StaticVariable::ALL {
+        assert_eq!(
+            cache.get(variable).is_some(),
+            used.contains(&variable),
+            "{variable:?} cached"
+        );
     }
 }
 
@@ -137,7 +160,7 @@ fn minimal_init_writes_lean_config() {
             image: env.art_path(),
             padding: 4,
             text: Text {
-                blocks: blocks(&["Host: {hostname}"]),
+                blocks: vec![content_block("Host: {hostname}")],
                 ..Text::default()
             },
         },
@@ -190,7 +213,7 @@ fn accepted_overwrite_replaces_config() {
     let output = env.jaci_with_input(&["init", IMAGE], "y\n");
 
     assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
-    assert_full_config(&env, Mode::Ascii, AsciiStyle::Bright, 80, &FULL_BLOCKS);
+    assert_full_config(&env, &Settings::default());
 }
 
 #[test]
@@ -209,7 +232,7 @@ fn accepted_overwrite_writes_through_a_symlinked_config() {
     let link = fs::symlink_metadata(env.config_path()).unwrap();
     assert!(link.file_type().is_symlink());
     assert_eq!(fs::read_link(env.config_path()).unwrap(), target);
-    assert_full_config(&env, Mode::Ascii, AsciiStyle::Bright, 80, &FULL_BLOCKS);
+    assert_full_config(&env, &Settings::default());
 }
 
 #[test]
@@ -252,7 +275,7 @@ fn interactive_init_asks_for_image() {
             "Show {uptime}? [Y/n]: ",
         )
     );
-    assert_full_config(&env, Mode::Ascii, AsciiStyle::Bright, 80, &FULL_BLOCKS);
+    assert_full_config(&env, &Settings::default());
     assert_eq!(read_art(&env.art_path()).columns(), 80);
 }
 
@@ -287,9 +310,9 @@ fn given_image_skips_image_prompt() {
     );
     assert!(text.lines().any(|line| line == "width = 40"), "{text}");
     assert!(!text.contains("{os}"), "{text}");
-    let mut contents = FULL_BLOCKS.to_vec();
-    contents.remove(1);
-    assert_full_config(&env, Mode::Braille, AsciiStyle::Bright, 40, &contents);
+    let mut settings = settings(Mode::Braille, AsciiStyle::Bright, 40);
+    settings.shown[1] = false;
+    assert_full_config(&env, &settings);
     assert_eq!(read_art(&env.art_path()).columns(), 40);
 }
 
@@ -317,7 +340,7 @@ fn interactive_init_asks_the_style_for_ascii() {
         text.lines().any(|line| line == r#"ascii_style = "tinted""#),
         "{text}"
     );
-    assert_full_config(&env, Mode::Ascii, AsciiStyle::Tinted, 40, &FULL_BLOCKS);
+    assert_full_config(&env, &settings(Mode::Ascii, AsciiStyle::Tinted, 40));
     assert_eq!(read_art(&env.art_path()).columns(), 40);
 }
 
