@@ -177,7 +177,7 @@ fn opaque(image: &RgbaImage) -> bool {
 /// and where its alpha rounds to 255, as in an opaque image, whose resampled
 /// alphas sit on or a float rounding step below 1 and whose colour that
 /// alpha cannot distort.
-fn resample(image: &RgbaImage, width: u32, height: u32) -> RgbaImage {
+pub(crate) fn resample(image: &RgbaImage, width: u32, height: u32) -> RgbaImage {
     let premultiplied = image
         .as_raw()
         .chunks_exact(4)
@@ -231,7 +231,7 @@ fn byte(value: f32) -> u8 {
 }
 
 /// `value` rounded half away from zero, at least 1.
-fn rounded(value: f64) -> u32 {
+pub(crate) fn rounded(value: f64) -> u32 {
     // The cast saturates, so a value beyond u32 stays in range.
     (value.round() as u32).max(1)
 }

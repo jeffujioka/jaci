@@ -6,7 +6,7 @@ mod common;
 use std::fs;
 use std::path::Path;
 
-use common::{Env, HELP_LINE, plain, read_art, stderr};
+use common::{Env, HELP_LINE, plain, read_art, read_png, stderr};
 use tempfile::TempDir;
 
 const IMAGE: &str = "test_fixtures/4x4.png";
@@ -349,6 +349,60 @@ fn unknown_ascii_style_is_a_usage_error() {
 
     assert_eq!(output.status.code(), Some(2));
     assert!(!env.art_path().exists());
+}
+
+#[test]
+fn encode_keeps_saved_image() {
+    let env = Env::new();
+
+    let output = env.jaci(&["encode", IMAGE]);
+
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    let saved = read_png(&env.config_folder().join("image.png"));
+    assert_eq!(saved, image::open(IMAGE).unwrap().into_rgba8());
+}
+
+#[test]
+fn large_image_is_shrunk() {
+    let env = Env::new();
+    let tmp = TempDir::new().unwrap();
+    let large = tmp.path().join("large.png");
+    image::RgbaImage::from_pixel(300, 150, image::Rgba([10, 20, 30, 255]))
+        .save(&large)
+        .unwrap();
+
+    let output = env.jaci(&["encode", large.to_str().unwrap()]);
+
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    let saved = read_png(&env.config_folder().join("image.png"));
+    assert_eq!(saved.dimensions(), (120, 60));
+}
+
+#[test]
+fn output_option_keeps_no_saved_image() {
+    let env = Env::new();
+    let tmp = TempDir::new().unwrap();
+    let out = tmp.path().join("out.ansi");
+
+    let output = env.jaci(&["encode", "-o", out.to_str().unwrap(), IMAGE]);
+
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert!(!env.config_folder().join("image.png").exists());
+    assert!(!env.config_folder().join("sizes").exists());
+}
+
+#[test]
+fn new_saved_image_drops_sized_art() {
+    let env = Env::new();
+    let sizes = env.config_folder().join("sizes");
+    fs::create_dir_all(&sizes).unwrap();
+    fs::write(sizes.join("38.ansi"), "old").unwrap();
+
+    let output = env.jaci(&["encode", IMAGE]);
+
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    let left = fs::read_dir(&sizes).map_or(0, Iterator::count);
+    assert_eq!(left, 0, "sized art left in {}", sizes.display());
 }
 
 fn read(path: &Path) -> String {

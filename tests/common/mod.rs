@@ -185,6 +185,15 @@ pub fn read_art(path: &Path) -> Art {
     art_file::read(path).unwrap_or_else(|error| panic!("{error}"))
 }
 
+/// The image `path` holds, decoded as a PNG, failing the test when it is
+/// missing or not one.
+#[allow(dead_code)]
+pub fn read_png(path: &Path) -> image::RgbaImage {
+    image::load_from_memory_with_format(&fs::read(path).unwrap(), image::ImageFormat::Png)
+        .unwrap()
+        .into_rgba8()
+}
+
 /// `text` read without its escapes, each `ESC [`, the parameters and the
 /// final letter left out.
 #[allow(dead_code)]

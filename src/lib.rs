@@ -13,6 +13,7 @@ pub mod init;
 pub mod named;
 pub mod palette;
 pub mod render;
+pub mod saved_image;
 pub mod size;
 pub mod sysinfo;
 pub mod template;

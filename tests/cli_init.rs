@@ -6,7 +6,7 @@ mod common;
 use std::fs;
 use std::os::unix::fs::symlink;
 
-use common::{Env, HELP_LINE, content_block, read_art, read_cache, stderr, stdout};
+use common::{Env, HELP_LINE, content_block, read_art, read_cache, read_png, stderr, stdout};
 use jaci::cache;
 use jaci::config::{Banner, Block, Config, Encode, Text, Valign};
 use jaci::init::{self, Settings};
@@ -203,6 +203,17 @@ fn minimal_init_writes_lean_config() {
     for variable in [Os, Cpu, Gpu] {
         assert_eq!(cache.get(variable), None, "{variable:?} is cached");
     }
+}
+
+#[test]
+fn init_keeps_saved_image() {
+    let env = Env::new();
+
+    let output = env.jaci(&["init", "--minimal", IMAGE]);
+
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    let saved = read_png(&env.config_folder().join("image.png"));
+    assert_eq!(saved, image::open(IMAGE).unwrap().into_rgba8());
 }
 
 #[test]
