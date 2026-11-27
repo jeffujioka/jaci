@@ -23,6 +23,8 @@ pub const FILE_NAME: &str = "config.toml";
 /// The default art file's name in the config folder.
 pub const DEFAULT_IMAGE: &str = "art.ansi";
 pub(crate) const DEFAULT_PADDING: u32 = 4;
+const DEFAULT_MIN_WIDTH: u32 = 20;
+const DEFAULT_MAX_WIDTH: u32 = 60;
 /// The start of a `[banner].image` that names the home folder.
 pub(crate) const HOME_PREFIX: &str = "~/";
 
@@ -59,6 +61,10 @@ pub struct Encode {
     pub mode: Mode,
     /// At least 1.
     pub width: u32,
+    /// The fewest art columns; at least 1 and at most `max_width`.
+    pub min_width: u32,
+    /// The most art columns; at least 1.
+    pub max_width: u32,
     /// Finite and above 0.
     pub ratio: f64,
     /// How ascii mode picks and colours its characters.
@@ -72,6 +78,8 @@ impl Default for Encode {
         Self {
             mode: Mode::Ascii,
             width: DEFAULT_COLUMNS,
+            min_width: DEFAULT_MIN_WIDTH,
+            max_width: DEFAULT_MAX_WIDTH,
             ratio: DEFAULT_RATIO,
             ascii_style: AsciiStyle::default(),
             charset: None,
@@ -379,12 +387,23 @@ fn read_root(root: &DeTable<'_>, home: &Path, config: &mut Config) -> Result<(),
     Ok(())
 }
 
+/// Reads `[encode]`; a `min_width` above the `max_width` is refused at the
+/// `min_width` the file sets, else at its `max_width`.
 fn read_encode(table: &DeTable<'_>, encode: &mut Encode) -> Result<(), Invalid> {
+    let mut limit_span = None;
     for (key, value) in entries(table) {
         match key.get_ref().as_ref() {
             "mode" => encode.mode = named(value, "encode.mode")?,
             "ascii_style" => encode.ascii_style = named(value, "encode.ascii_style")?,
             "width" => encode.width = whole_number(value, "encode.width", 1)?,
+            "min_width" => {
+                encode.min_width = whole_number(value, "encode.min_width", 1)?;
+                limit_span = Some(key.span());
+            }
+            "max_width" => {
+                encode.max_width = whole_number(value, "encode.max_width", 1)?;
+                limit_span = limit_span.or(Some(key.span()));
+            }
             "ratio" => encode.ratio = number_above_zero(value, "encode.ratio")?,
             "charset" => {
                 const VALUES: &str = "text of at least one character";
@@ -394,6 +413,17 @@ fn read_encode(table: &DeTable<'_>, encode: &mut Encode) -> Result<(), Invalid> 
             }
             _ => return Err(unknown_key(key, "encode")),
         }
+    }
+    if encode.min_width > encode.max_width
+        && let Some(span) = limit_span
+    {
+        return Err(Invalid::at(
+            span,
+            format!(
+                "encode.min_width ({}) must be at most encode.max_width ({})",
+                encode.min_width, encode.max_width
+            ),
+        ));
     }
     Ok(())
 }

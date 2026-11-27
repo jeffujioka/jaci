@@ -16,10 +16,12 @@ use jaci::sysinfo::StaticVariable::{self, Cpu, Gpu, Hostname, Os, User};
 
 const IMAGE: &str = "test_fixtures/4x4.png";
 /// The keys the full config writes, each with a comment line above it.
-const COMMENTED_KEYS: [&str; 14] = [
+const COMMENTED_KEYS: [&str; 16] = [
     "mode",
     "ascii_style",
     "width",
+    "min_width",
+    "max_width",
     "ratio",
     "image",
     "padding",
@@ -136,6 +138,35 @@ fn init_sets_everything_up() {
             "{variable:?} cached"
         );
     }
+}
+
+#[test]
+fn init_writes_size_limits() {
+    let env = Env::new();
+
+    let output = env.jaci(&["init", IMAGE]);
+
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    let text = env.config_text();
+    let encode: Vec<&str> = text
+        .lines()
+        .skip_while(|line| *line != "[encode]")
+        .skip(1)
+        .take_while(|line| !line.starts_with('['))
+        .collect();
+    let position = |line: &str| encode.iter().position(|candidate| *candidate == line);
+    let width = position("width = 80").expect(&text);
+    let min = position("min_width = 20").expect(&text);
+    let max = position("max_width = 60").expect(&text);
+    assert!(width < min && min < max, "{text}");
+    for limit in [min, max] {
+        assert!(
+            encode[limit - 1].starts_with('#'),
+            "no comment above:\n{text}"
+        );
+    }
+    let config = env.config();
+    assert_eq!((config.encode.min_width, config.encode.max_width), (20, 60));
 }
 
 #[test]

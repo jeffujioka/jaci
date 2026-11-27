@@ -361,6 +361,11 @@ mode = {mode}
 ascii_style = {style}
 # The art's width in columns: a whole number of at least 1.
 width = {width}
+# The narrowest art the banner draws, in columns; a smaller pane shows the
+# text panel alone.
+min_width = {min_width}
+# The widest art the banner draws, in columns.
+max_width = {max_width}
 # Character width ÷ height, which keeps the art's proportions: a number above 0.
 ratio = {ratio}
 # The characters ascii mode draws with, darkest first; left out, the ascii
@@ -402,6 +407,8 @@ icons = true
         styles = AsciiStyle::one_of(),
         style = toml_value(encode.ascii_style.name()),
         width = toml_value(i64::from(encode.width)),
+        min_width = toml_value(i64::from(encode.min_width)),
+        max_width = toml_value(i64::from(encode.max_width)),
         ratio = toml_value(encode.ratio),
         charset = toml_value(DEFAULT_CHARSET),
         image = toml_value(image),

@@ -54,6 +54,8 @@ fn missing_config_gives_defaults() {
             encode: Encode {
                 mode: Mode::Ascii,
                 width: 80,
+                min_width: 20,
+                max_width: 60,
                 ratio: 0.5,
                 ascii_style: AsciiStyle::Bright,
                 charset: None,
@@ -80,6 +82,8 @@ fn every_key_loads_its_value() {
 mode = "braille"
 ascii_style = "tinted"
 width = 120
+min_width = 30
+max_width = 100
 ratio = 0.45
 charset = " #"
 
@@ -108,6 +112,8 @@ style = "dim"
             encode: Encode {
                 mode: Mode::Braille,
                 width: 120,
+                min_width: 30,
+                max_width: 100,
                 ratio: 0.45,
                 ascii_style: AsciiStyle::Tinted,
                 charset: Some(Charset::new(" #").unwrap()),
@@ -162,6 +168,46 @@ fn out_of_range_value_names_key() {
             "jaci: config {}: line 2: encode.width must be a whole number of at least 1",
             path.display()
         )
+    );
+}
+
+#[test]
+fn size_limits_load() {
+    let (_folder, _path, config) = load("[encode]\nmin_width = 10\nmax_width = 40\n");
+
+    let encode = config.unwrap_or_else(|error| panic!("{error}")).encode;
+    assert_eq!((encode.min_width, encode.max_width), (10, 40));
+}
+
+#[test]
+fn size_limits_default_to_20_and_60() {
+    let (_folder, _path, config) = load("[encode]\nwidth = 50\n");
+
+    let encode = config.unwrap_or_else(|error| panic!("{error}")).encode;
+    assert_eq!((encode.min_width, encode.max_width), (20, 60));
+}
+
+#[test]
+fn minimum_above_maximum_refused() {
+    let (path, message) = load_error("[encode]\nmin_width = 30\nmax_width = 25\n");
+
+    let prefix = format!("jaci: config {}: line 2: ", path.display());
+    assert!(message.starts_with(&prefix), "{message}");
+    assert!(
+        message.contains("encode.min_width (30) must be at most encode.max_width (25)"),
+        "{message}"
+    );
+}
+
+#[test]
+fn maximum_below_default_minimum_refused() {
+    let (path, message) = load_error("[encode]\nmax_width = 10\n");
+
+    let prefix = format!("jaci: config {}: line 2: ", path.display());
+    assert!(message.starts_with(&prefix), "{message}");
+    assert!(
+        message.contains("encode.min_width (20) must be at most encode.max_width (10)"),
+        "{message}"
     );
 }
 
