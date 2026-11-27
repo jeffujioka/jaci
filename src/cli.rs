@@ -25,6 +25,7 @@ use crate::init::{self, InitError, Settings};
 use crate::named::Named;
 use crate::palette;
 use crate::render::{self, AsciiStyle, Charset, Mode};
+use crate::saved_image::{self, SaveError};
 use crate::size::{self, Fit, Sizing, TooLarge};
 use crate::sysinfo::StaticVariable::{self, Cpu, Gpu};
 use crate::text;
@@ -182,6 +183,7 @@ enum CliError {
     Art(ArtFileError),
     Print(io::Error),
     Init(InitError),
+    SavedImage(SaveError),
     /// Neither the art file nor the cache exists.
     FirstTime,
     /// The art file does not exist.
@@ -209,6 +211,7 @@ impl fmt::Display for CliError {
             Self::Art(error) => error.fmt(f),
             Self::Print(source) => write!(f, "jaci: cannot print the banner: {source}"),
             Self::Init(error) => error.fmt(f),
+            Self::SavedImage(error) => error.fmt(f),
             Self::FirstTime => f.write_str(
                 "First time? Welcome! jaci needs a quick setup — run 'jaci init' and you're good to go.",
             ),
@@ -231,6 +234,7 @@ impl Error for CliError {
             Self::Cache(error) => error.source(),
             Self::Art(error) => error.source(),
             Self::Init(error) => error.source(),
+            Self::SavedImage(error) => error.source(),
         }
     }
 }
@@ -271,6 +275,12 @@ impl From<ArtFileError> for CliError {
     }
 }
 
+impl From<SaveError> for CliError {
+    fn from(error: SaveError) -> Self {
+        Self::SavedImage(error)
+    }
+}
+
 /// Runs jaci with the process's arguments and environment. A usage error
 /// exits 2 through clap; an error jaci reports prints its message and the
 /// help line on stderr and exits 1.
@@ -293,7 +303,9 @@ fn run(cli: Cli) -> Result<(), CliError> {
     let home = env::home_dir().ok_or(CliError::NoHome)?;
     let folder = config::folder(env::var_os("XDG_CONFIG_HOME").as_deref(), &home);
     match cli.command {
-        Command::Encode(args) => with_spinner(|| encode(&args, &config::load(&folder, &home)?)),
+        Command::Encode(args) => {
+            with_spinner(|| encode(&args, &config::load(&folder, &home)?, &folder))
+        }
         Command::Cache => Ok(cache::refresh(
             &config::load(&folder, &home)?,
             &folder.join(cache::FILE_NAME),
@@ -307,7 +319,7 @@ fn run(cli: Cli) -> Result<(), CliError> {
 /// Sets jaci up: asks what it has to on stdout and stdin, reading the image
 /// as soon as its path is known, fits it with the settings the config will
 /// hold, then writes the config, the art file encoded as `jaci encode`
-/// encodes with the written config, and the cache.
+/// encodes with the written config, the saved image and the cache.
 fn init(args: InitArgs, folder: &Path, home: &Path) -> Result<(), CliError> {
     if args.image.is_none() && !args.interactive {
         return Err(InitError::NoImage.into());
@@ -366,6 +378,7 @@ fn init(args: InitArgs, folder: &Path, home: &Path) -> Result<(), CliError> {
         encode.charset.as_ref(),
         &config.banner.image,
     )?;
+    saved_image::write(folder, &image, config.encode.max_width)?;
     let (mut cpu, mut gpu) = cpu_and_gpu.unzip();
     Ok(cache::refresh(
         &config,
@@ -437,8 +450,9 @@ fn banner(args: &BannerArgs, config: &Config, folder: &Path) -> Result<(), CliEr
 }
 
 /// Encodes `args.image` into an art file, the config filling in what the
-/// options leave out.
-fn encode(args: &EncodeArgs, config: &Config) -> Result<(), CliError> {
+/// options leave out. Without `-o` it also writes the saved image in
+/// `folder`.
+fn encode(args: &EncodeArgs, config: &Config, folder: &Path) -> Result<(), CliError> {
     // The terminal jaci runs in: stdout, else stderr, else stdin (D32).
     let auto = if args.auto {
         let (columns, _rows) = terminal_size::terminal_size().ok_or(CliError::NoTerminal)?;
@@ -463,7 +477,13 @@ fn encode(args: &EncodeArgs, config: &Config) -> Result<(), CliError> {
         args.ascii_style.unwrap_or(config.encode.ascii_style),
         args.charset.as_ref().or(config.encode.charset.as_ref()),
         args.output.as_deref().unwrap_or(&config.banner.image),
-    )
+    )?;
+    // `-o` writes an art file aside, leaving the banner's saved image and
+    // sized art alone.
+    if args.output.is_none() {
+        saved_image::write(folder, &image, config.encode.max_width)?;
+    }
+    Ok(())
 }
 
 /// The sizing the `[encode]` keys give, with no options.
