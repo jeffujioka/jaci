@@ -47,6 +47,13 @@ pub enum ArtFileError {
     },
 }
 
+impl ArtFileError {
+    /// Whether the art file is not there.
+    pub(crate) fn is_missing(&self) -> bool {
+        matches!(self, Self::Io { source, .. } if source.kind() == io::ErrorKind::NotFound)
+    }
+}
+
 impl fmt::Display for ArtFileError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {

@@ -1,6 +1,8 @@
 //! Ascii mode: one character per pixel, picked by the pixel's luminance, in
 //! one of four styles.
 
+use std::fmt::{self, Write as _};
+
 use image::RgbaImage;
 
 use super::{Mode, Rgb, opaque, push_cell, render_cells};
@@ -92,6 +94,13 @@ impl Default for Charset {
     /// ` .:-=+*#%@`
     fn default() -> Self {
         Self(DEFAULT_CHARSET.chars().collect())
+    }
+}
+
+impl fmt::Display for Charset {
+    /// The characters, darkest first.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.iter().try_for_each(|&c| f.write_char(c))
     }
 }
 

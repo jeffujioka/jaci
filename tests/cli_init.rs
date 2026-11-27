@@ -446,3 +446,12 @@ fn too_large_width_writes_nothing() {
     );
     assert!(!env.config_folder().exists());
 }
+
+#[test]
+fn help_tells_of_the_saved_image() {
+    let output = Env::new().jaci(&["init", "--help"]);
+
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    let help = stdout(&output);
+    assert!(help.contains("keep the image as the saved image"), "{help}");
+}

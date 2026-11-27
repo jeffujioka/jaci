@@ -5,19 +5,18 @@
 use std::borrow::Cow;
 use std::error::Error;
 use std::fmt;
-use std::fs;
 use std::io::{self, Cursor};
 use std::path::{Path, PathBuf};
 
-use image::{ImageFormat, RgbaImage};
+use image::{ImageError, ImageFormat, RgbaImage};
 
 use crate::atomic_file;
+use crate::image_input::ImageInputError;
 use crate::size;
+use crate::sized_art;
 
 /// The saved image's name in the config folder.
 pub const FILE_NAME: &str = "image.png";
-/// The config folder's subfolder that holds the sized art.
-const SIZES: &str = "sizes";
 
 /// Why the saved image could not be written or the sized art deleted: the
 /// path that failed and the error.
@@ -68,12 +67,26 @@ pub fn write(folder: &Path, image: &RgbaImage, max_width: u32) -> Result<(), Sav
         .map_err(io::Error::other)
         .and_then(|()| atomic_file::write(&path, &png))
         .map_err(|source| SaveError { path, source })?;
-    let sizes = folder.join(SIZES);
-    match fs::remove_dir_all(&sizes) {
-        Err(error) if error.kind() != io::ErrorKind::NotFound => Err(SaveError {
-            path: sizes,
-            source: error,
-        }),
-        _ => Ok(()),
+    let sizes = sized_art::folder(folder);
+    sized_art::delete_all(&sizes).map_err(|source| SaveError {
+        path: sizes,
+        source,
+    })
+}
+
+/// The width and height in pixels of the saved image in `folder`, read
+/// from its header, or `None` when there is none.
+///
+/// # Errors
+///
+/// [`ImageInputError::Read`] when the saved image cannot be read and
+/// [`ImageInputError::Decode`] when its header cannot be decoded.
+pub fn dimensions(folder: &Path) -> Result<Option<(u32, u32)>, ImageInputError> {
+    let path = folder.join(FILE_NAME);
+    match image::image_dimensions(&path) {
+        Ok(dimensions) => Ok(Some(dimensions)),
+        Err(ImageError::IoError(source)) if source.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(ImageError::IoError(source)) => Err(ImageInputError::Read { path, source }),
+        Err(source) => Err(ImageInputError::Decode { path, source }),
     }
 }

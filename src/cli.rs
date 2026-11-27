@@ -15,10 +15,10 @@ use std::time::Duration;
 use clap::builder::PossibleValue;
 use clap::{Args, Parser, Subcommand, ValueEnum};
 
-use crate::art_file::{self, ArtFileError};
+use crate::art_file::{self, Art, ArtFileError};
 use crate::atomic_file;
 use crate::cache::{self, CacheError};
-use crate::compose;
+use crate::compose::{self, Layout, Pane};
 use crate::config::{self, Config, ConfigError, Encode};
 use crate::image_input::{self, ImageInputError};
 use crate::init::{self, InitError, Settings};
@@ -27,6 +27,7 @@ use crate::palette;
 use crate::render::{self, AsciiStyle, Charset, Mode};
 use crate::saved_image::{self, SaveError};
 use crate::size::{self, Fit, Sizing, TooLarge};
+use crate::sized_art::{self, SizedArtError};
 use crate::sysinfo::StaticVariable::{self, Cpu, Gpu};
 use crate::text;
 
@@ -46,16 +47,18 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
-    /// Encode an image into an art file.
+    /// Encode an image into an art file; without --output, also keep the
+    /// image as the saved image and delete the sized art.
     Encode(EncodeArgs),
     /// Write the system info cache: the values of the static variables the
     /// config's text blocks use.
     Cache,
-    /// Show the art file with the text panel beside it, when stdout is a
-    /// terminal.
+    /// Show the art and the text panel laid out for the pane, when stdout is
+    /// a terminal: the art sized from the saved image when there is one,
+    /// else the art file.
     Banner(BannerArgs),
-    /// Set jaci up: write the config, encode the image into the art file and
-    /// write the system info cache.
+    /// Set jaci up: write the config, keep the image as the saved image,
+    /// encode it into the art file and write the system info cache.
     Init(InitArgs),
 }
 
@@ -77,7 +80,8 @@ struct InitArgs {
 /// `jaci banner`'s arguments.
 #[derive(Debug, Args)]
 struct BannerArgs {
-    /// The art file to show [default: [banner].image, else
+    /// The art file to show instead of the sized art [default: the sized
+    /// art with a saved image, else [banner].image, else
     /// <config folder>/art.ansi].
     art: Option<PathBuf>,
     /// Write the system info cache first, as `jaci cache` does.
@@ -180,6 +184,7 @@ enum CliError {
         source: io::Error,
     },
     Cache(CacheError),
+    SizedArt(SizedArtError),
     Art(ArtFileError),
     Print(io::Error),
     Init(InitError),
@@ -208,6 +213,7 @@ impl fmt::Display for CliError {
                 )
             }
             Self::Cache(error) => error.fmt(f),
+            Self::SizedArt(error) => error.fmt(f),
             Self::Art(error) => error.fmt(f),
             Self::Print(source) => write!(f, "jaci: cannot print the banner: {source}"),
             Self::Init(error) => error.fmt(f),
@@ -232,6 +238,7 @@ impl Error for CliError {
             Self::Image(error) => error.source(),
             Self::Write { source, .. } | Self::Print(source) => Some(source),
             Self::Cache(error) => error.source(),
+            Self::SizedArt(error) => error.source(),
             Self::Art(error) => error.source(),
             Self::Init(error) => error.source(),
             Self::SavedImage(error) => error.source(),
@@ -278,6 +285,12 @@ impl From<ArtFileError> for CliError {
 impl From<SaveError> for CliError {
     fn from(error: SaveError) -> Self {
         Self::SavedImage(error)
+    }
+}
+
+impl From<SizedArtError> for CliError {
+    fn from(error: SizedArtError) -> Self {
+        Self::SizedArt(error)
     }
 }
 
@@ -394,9 +407,10 @@ fn init(args: InitArgs, folder: &Path, home: &Path) -> Result<(), CliError> {
     )?)
 }
 
-/// Prints the art beside the text panel, sized for the terminal, after
+/// Prints the art beside the text panel, laid out for the pane, after
 /// refreshing the cache when asked to and checking that the art file and
-/// every static variable the config uses are there.
+/// every static variable the config uses are there. With a saved image and
+/// no art file given, the art is the sized art at the layout's width.
 fn banner(args: &BannerArgs, config: &Config, folder: &Path) -> Result<(), CliError> {
     let cache_path = folder.join(cache::FILE_NAME);
     if args.refresh_cache {
@@ -404,7 +418,7 @@ fn banner(args: &BannerArgs, config: &Config, folder: &Path) -> Result<(), CliEr
     }
     let art = match art_file::read(args.art.as_deref().unwrap_or(&config.banner.image)) {
         Ok(art) => Some(art),
-        Err(ArtFileError::Io { source, .. }) if source.kind() == io::ErrorKind::NotFound => None,
+        Err(error) if error.is_missing() => None,
         Err(error) => return Err(error.into()),
     };
     let (art, cache) = match (art, cache::read(&cache_path)?) {
@@ -421,23 +435,61 @@ fn banner(args: &BannerArgs, config: &Config, folder: &Path) -> Result<(), CliEr
     }
     let text = &config.banner.text;
     // The terminal jaci runs in: stdout, which the check above found to be
-    // one. Without a size to read the art shows alone.
-    let width = terminal_size::terminal_size().map_or(0, |(columns, _rows)| columns.0.into());
-    let panel = compose::panel_width(art.columns(), config.banner.padding, width);
-    // With no panel to show the text in, no block resolves and so no
-    // command runs.
-    let lines = match panel {
-        Some(panel) => text::resolve(text, &cache, &palette::of(&art), panel.width()),
-        None => Vec::new(),
+    // one. A size that cannot be read, or reads 0 columns or 0 rows, leaves
+    // no pane.
+    let size = terminal_size::terminal_size()
+        .map(|(columns, rows)| (usize::from(columns.0), usize::from(rows.0)));
+    let pane = size
+        .filter(|&(columns, rows)| columns > 0 && rows > 0)
+        .map(|(columns, rows)| Pane { columns, rows });
+    // Without a pane or a saved image, or with an art file given, the art
+    // file shows as it is (D10).
+    let image = match pane {
+        Some(_) if args.art.is_none() => saved_image::dimensions(folder)?,
+        _ => None,
     };
-    let rows = compose::banner(
-        art.rows(),
-        art.columns(),
-        &lines,
-        panel,
-        text.align,
-        text.valign,
-    );
+    let rows = match pane.zip(image) {
+        Some((pane, image)) => {
+            // The blocks resolve once, for a panel as wide as the pane, and
+            // their lines pick the layout, so their commands run even when
+            // the art then shows alone (D6).
+            let lines = text::resolve(text, &cache, &palette::of(&art), pane.columns);
+            let layout =
+                compose::layout(pane, &config.encode, config.banner.padding, image, &lines);
+            let shown = match layout {
+                Layout::SideBySide { art_columns, .. }
+                | Layout::PanelBelow { art_columns, .. }
+                | Layout::ArtAlone { art_columns } => Some(sized(config, folder, art_columns)?),
+                Layout::PanelAlone { .. } => None,
+            };
+            compose::rows(
+                layout,
+                shown.as_ref().map_or(&[], Art::rows),
+                &lines,
+                text.align,
+                text.valign,
+            )
+        }
+        None => {
+            // Without a size to read the art shows alone.
+            let width = size.map_or(0, |(columns, _rows)| columns);
+            let panel = compose::panel_width(art.columns(), config.banner.padding, width);
+            // With no panel to show the text in, no block resolves and so
+            // no command runs.
+            let lines = match panel {
+                Some(panel) => text::resolve(text, &cache, &palette::of(&art), panel.width()),
+                None => Vec::new(),
+            };
+            compose::banner(
+                art.rows(),
+                art.columns(),
+                &lines,
+                panel,
+                text.align,
+                text.valign,
+            )
+        }
+    };
     let mut output = String::new();
     for row in rows {
         output.push_str(&row);
@@ -447,6 +499,30 @@ fn banner(args: &BannerArgs, config: &Config, folder: &Path) -> Result<(), CliEr
         .lock()
         .write_all(output.as_bytes())
         .map_err(CliError::Print)
+}
+
+/// The sized art `columns` wide in `folder`, written when missing from the
+/// saved image as `jaci encode -w <columns>` writes it with `config`'s
+/// `[encode]` settings.
+fn sized(config: &Config, folder: &Path, columns: usize) -> Result<Art, CliError> {
+    let encode = &config.encode;
+    let columns =
+        u32::try_from(columns).expect("the layout picks a width within [encode]'s limits");
+    sized_art::show(folder, encode, columns, |path| {
+        let image = image_input::read(folder.join(saved_image::FILE_NAME))?;
+        let sizing = Sizing {
+            width: Some(columns),
+            ..config_sizing(encode)
+        };
+        let fit = size::fit(&image, encode.mode, &sizing)?;
+        write_art(
+            &fit,
+            encode.mode,
+            encode.ascii_style,
+            encode.charset.as_ref(),
+            path,
+        )
+    })
 }
 
 /// Encodes `args.image` into an art file, the config filling in what the
