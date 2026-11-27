@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use common::read_cache;
 use jaci::cache::{self, Cache};
 use jaci::named::Named;
-use jaci::sysinfo::StaticVariable::{self, Cpu, Gpu, Hostname, Os};
+use jaci::sysinfo::StaticVariable::{self, Cpu, Gpu, Hostname, Os, User};
 use tempfile::TempDir;
 
 /// A fresh folder (kept alive) and the path of a cache file in it.
@@ -101,4 +101,15 @@ fn other_values_and_keys_are_damaged() {
             "{error}"
         );
     }
+}
+
+#[test]
+fn saved_user_reads_back() {
+    let (_folder, path) = cache_file();
+
+    cache::write(&path, &cache_of(&[(User, "u1"), (Hostname, "h1")])).unwrap();
+    let cache = read_cache(&path);
+
+    assert_eq!(cache.get(User), Some("u1"));
+    assert_eq!(cache.get(Hostname), Some("h1"));
 }

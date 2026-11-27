@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 
 use unicode_width::UnicodeWidthChar;
 
-use crate::ansi::{self, ActiveSgr, RESET, Token};
+use crate::ansi::{self, ActiveSgr, BOLD, DIM, RESET, Token};
 use crate::cache::Cache;
 use crate::config::{Block, BlockText, Style};
 use crate::named::Named;
@@ -24,8 +24,6 @@ use crate::template::{self, Segment};
 /// The time each command gets from its own start before it is killed.
 pub const COMMAND_TIME_LIMIT: Duration = Duration::from_secs(3);
 
-const BOLD: &str = "\x1b[1m";
-const DIM: &str = "\x1b[2m";
 /// Panel text has a tab stop every this many columns.
 const TAB_STOP: usize = 8;
 
