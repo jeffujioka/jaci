@@ -19,7 +19,7 @@ use std::time::{Duration, Instant};
 use jaci::art_file::{self, Art};
 use jaci::cache::{self, Cache};
 use jaci::compose;
-use jaci::config::{self, Align, Block, BlockText, Config, Style, Valign};
+use jaci::config::{self, Align, Block, BlockText, Config, Style, TextBlock, Valign};
 use jaci::template;
 use tempfile::TempDir;
 
@@ -197,11 +197,13 @@ pub fn config_with(contents: &[&str]) -> String {
 /// A normal block without colour whose `content` is `content`.
 #[allow(dead_code)]
 pub fn content_block(content: &str) -> Block {
-    Block {
+    Block::Text(TextBlock {
         text: BlockText::Content(template::parse(content).unwrap()),
         style: Style::Normal,
         color: None,
-    }
+        label: None,
+        icon: None,
+    })
 }
 
 /// The banner of `art`, `columns` wide, on a terminal `terminal_width`

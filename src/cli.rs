@@ -23,6 +23,7 @@ use crate::config::{self, Config, ConfigError, Encode};
 use crate::image_input::{self, ImageInputError};
 use crate::init::{self, InitError, Settings};
 use crate::named::Named;
+use crate::palette;
 use crate::render::{self, AsciiStyle, Charset, Mode};
 use crate::size::{self, Fit, Sizing, TooLarge};
 use crate::text;
@@ -393,7 +394,7 @@ fn banner(args: &BannerArgs, config: &Config, folder: &Path) -> Result<(), CliEr
     // With no panel to show the text in, no block resolves and so no
     // command runs.
     let lines = match panel {
-        Some(_) => text::resolve(&text.blocks, &cache),
+        Some(panel) => text::resolve(text, &cache, &palette::of(&art), panel.width()),
         None => Vec::new(),
     };
     let rows = compose::banner(

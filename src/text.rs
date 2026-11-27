@@ -16,7 +16,7 @@ use unicode_width::UnicodeWidthChar;
 
 use crate::ansi::{self, ActiveSgr, BOLD, DIM, RESET, Token};
 use crate::cache::Cache;
-use crate::config::{Block, BlockText, Style};
+use crate::config::{Block, BlockText, Style, Text};
 use crate::named::Named;
 use crate::sysinfo::{DynamicVariable, StaticVariable, UNKNOWN};
 use crate::template::{self, Segment};
@@ -27,13 +27,31 @@ pub const COMMAND_TIME_LIMIT: Duration = Duration::from_secs(3);
 /// Panel text has a tab stop every this many columns.
 const TAB_STOP: usize = 8;
 
-/// The panel lines of `blocks`, in block order: one line per line of each
-/// block's resolved text, carrying the block's style and colour, then the
-/// SGR sequences of the block's earlier lines since their last reset, so a
-/// colour set on one line of a command's output stays on its later lines.
+/// The panel lines of the blocks of `text`, in block order.
+///
+/// A text block gives one line per line of its resolved text, carrying the
+/// block's style and colour, then the SGR sequences of the block's earlier
+/// lines since their last reset, so a colour set on one line of a command's
+/// output stays on its later lines.
 /// Trailing lines of command output that hold escapes and no characters,
 /// such as the reset `tput sgr0` prints after a newline, are left out; a
 /// line of literal text always stays.
+///
+/// A labelled block, one with a `label` or an `icon`, starts its first line
+/// with its icon, padded to the widest icon of the panel, when `text.icons`
+/// is on and a block of the panel has an icon, then a space, then its
+/// label, all bold in its label colour, then spaces up to the value column:
+/// two past the widest label. Its later lines start with spaces up to that
+/// column. The k-th labelled block takes palette colour k, or its own
+/// `color`, which then no longer colours its text.
+///
+/// A title block gives `{user}`, a dim `@` and `{hostname}`, bold in
+/// palette colours 1 and 2, then a dim rule as wide as the widest line of
+/// the panel and at most `panel_width`. A dots block gives an empty line,
+/// then one `●` per palette colour, in palette order.
+///
+/// Palette colour i of a palette of n colours is colour ((i − 1) mod n) + 1;
+/// `palette` is never empty, as [`palette::of`](crate::palette::of) gives.
 ///
 /// Static variables take their values from `cache`, [`UNKNOWN`] when it has
 /// none; each dynamic variable a block uses is read once; any other `{...}`
@@ -44,13 +62,19 @@ const TAB_STOP: usize = 8;
 /// time. Variables are not replaced inside commands or their output.
 ///
 /// All of a block's text, literal text, variable values and output alike,
-/// keeps its SGR sequences and newlines, and has every tab expanded to the
-/// next stop every 8 columns of its panel line; its other escape sequences
-/// and control characters, C0, DEL and C1, are removed, so no text moves
-/// the cursor over the art.
-pub fn resolve(blocks: &[Block], cache: &Cache) -> Vec<String> {
+/// and a title's user and host, keep their SGR sequences and newlines, and
+/// have every tab expanded to the next stop every 8 columns of its panel
+/// line; their other escape sequences and control characters, C0, DEL and
+/// C1, are removed, so no text moves the cursor over the art.
+pub fn resolve(text: &Text, cache: &Cache, palette: &[[u8; 3]], panel_width: usize) -> Vec<String> {
+    let text_blocks = || {
+        text.blocks.iter().filter_map(|block| match block {
+            Block::Text(block) => Some(block),
+            Block::Title | Block::Dots => None,
+        })
+    };
     let mut commands = Vec::new();
-    for block in blocks {
+    for block in text_blocks() {
         match &block.text {
             BlockText::Content(segments) => {
                 commands.extend(segments.iter().filter_map(|segment| match segment {
@@ -63,34 +87,129 @@ pub fn resolve(blocks: &[Block], cache: &Cache) -> Vec<String> {
     }
     let mut outputs = run_all(&commands).into_iter();
     let mut output = || outputs.next().expect("one output per command");
+    let icon_width = text_blocks()
+        .filter_map(|block| block.icon.as_deref())
+        .map(ansi::visible_width)
+        .max()
+        .filter(|_| text.icons);
+    let label_width = text_blocks()
+        .filter_map(|block| block.label.as_deref())
+        .map(ansi::visible_width)
+        .max()
+        .unwrap_or(0);
+    let value_column = icon_width.map_or(0, |width| width + 1) + label_width + 2;
+    let colour = |index: usize| palette[index % palette.len()];
+    let mut labels = 0;
     let mut variables = Variables::new(cache);
     let mut lines = Vec::new();
-    for block in blocks {
-        let mut text = PanelText::default();
+    // Where each title's rule goes, once the widest line is known.
+    let mut rules = Vec::new();
+    for block in &text.blocks {
+        let block = match block {
+            Block::Text(block) => block,
+            Block::Title => {
+                let mut title = String::new();
+                push_name(&mut title, variables.of(StaticVariable::User), colour(0));
+                title.push_str(DIM);
+                title.push('@');
+                title.push_str(RESET);
+                push_name(
+                    &mut title,
+                    variables.of(StaticVariable::Hostname),
+                    colour(1),
+                );
+                let mut resolved = PanelText::default();
+                resolved.push(&title, Source::Literal);
+                resolved.push_lines(&mut lines, "", "", "");
+                rules.push(lines.len());
+                lines.push(String::new());
+                continue;
+            }
+            Block::Dots => {
+                lines.push(String::new());
+                let mut dots = String::new();
+                for (index, &dot) in palette.iter().enumerate() {
+                    if index > 0 {
+                        dots.push(' ');
+                    }
+                    ansi::push_foreground(&mut dots, dot);
+                    dots.push('●');
+                    dots.push_str(RESET);
+                }
+                lines.push(dots);
+                continue;
+            }
+        };
+        let mut resolved = PanelText::default();
         match &block.text {
             BlockText::Content(segments) => {
                 for segment in segments {
                     match segment {
-                        Segment::Text(literal) => variables.replace(literal, &mut text),
-                        Segment::Command(_) => text.push(&output(), Source::Output),
+                        Segment::Text(literal) => variables.replace(literal, &mut resolved),
+                        Segment::Command(_) => resolved.push(&output(), Source::Output),
                     }
                 }
             }
-            BlockText::Command(_) => text.push(&output(), Source::Output),
+            BlockText::Command(_) => resolved.push(&output(), Source::Output),
         }
-        text.push_lines(&mut lines, &style_prefix(block));
+        if block.label.is_none() && block.icon.is_none() {
+            resolved.push_lines(&mut lines, "", "", &style_prefix(block.style, block.color));
+            continue;
+        }
+        let label = block.label.as_deref().unwrap_or("");
+        let mut lead = BOLD.to_owned();
+        ansi::push_foreground(&mut lead, block.color.unwrap_or(colour(labels)));
+        labels += 1;
+        if let Some(width) = icon_width {
+            let icon = block.icon.as_deref().unwrap_or("");
+            lead.push_str(icon);
+            lead.extend(iter::repeat_n(' ', width - ansi::visible_width(icon) + 1));
+        }
+        lead.push_str(label);
+        lead.push_str(RESET);
+        lead.extend(iter::repeat_n(
+            ' ',
+            label_width - ansi::visible_width(label) + 2,
+        ));
+        resolved.push_lines(
+            &mut lines,
+            &lead,
+            &" ".repeat(value_column),
+            &style_prefix(block.style, None),
+        );
+    }
+    if !rules.is_empty() {
+        let width = lines
+            .iter()
+            .map(|line| ansi::visible_width(line))
+            .max()
+            .unwrap_or(0)
+            .min(panel_width);
+        let rule = format!("{DIM}{}{RESET}", "─".repeat(width));
+        for index in rules {
+            lines[index].clone_from(&rule);
+        }
     }
     lines
 }
 
-/// The escapes that start each line of `block`: its style, then its colour.
-fn style_prefix(block: &Block) -> String {
-    let mut prefix = match block.style {
+/// Appends `name` bold in `colour`, as a title shows the user and the host.
+fn push_name(title: &mut String, name: &str, colour: [u8; 3]) {
+    title.push_str(BOLD);
+    ansi::push_foreground(title, colour);
+    title.push_str(name);
+    title.push_str(RESET);
+}
+
+/// The escapes that start each line of a block's text: `style`, then
+/// `colour`.
+fn style_prefix(style: Style, colour: Option<[u8; 3]>) -> String {
+    let mut prefix = match style {
         Style::Normal => String::new(),
         Style::Bold => BOLD.to_owned(),
         Style::Dim => DIM.to_owned(),
     };
-    if let Some(colour) = block.color {
+    if let Some(colour) = colour {
         ansi::push_foreground(&mut prefix, colour);
     }
     prefix
@@ -158,20 +277,23 @@ impl PanelText {
 
     /// Appends to `lines` one line per line of the text, as [`str::lines`]
     /// splits it (the text holds no carriage return), less its trailing
-    /// lines of command output that hold escapes and no characters. Each
-    /// line starts with `prefix`, the block's style, then the SGR sequences
-    /// still active from the lines before it, and ends with a reset when
-    /// `prefix` is not empty.
-    fn push_lines(&self, lines: &mut Vec<String>, prefix: &str) {
+    /// lines of command output that hold escapes and no characters. The
+    /// first line starts with `first`, each later one with `later`, then
+    /// `prefix`, the block's style, then the SGR sequences still active
+    /// from the lines before it, and ends with a reset when `prefix` is not
+    /// empty.
+    fn push_lines(&self, lines: &mut Vec<String>, first: &str, later: &str, prefix: &str) {
         let mut active = ActiveSgr::default();
         // How many lines there are up to the last one that stays.
         let mut shown = lines.len();
         let mut start = 0;
         for chunk in self.text.split_inclusive('\n') {
             let line = chunk.strip_suffix('\n').unwrap_or(chunk);
+            let lead = if start == 0 { first } else { later };
             let mut resolved = String::with_capacity(
-                prefix.len() + active.as_str().len() + line.len() + RESET.len(),
+                lead.len() + prefix.len() + active.as_str().len() + line.len() + RESET.len(),
             );
+            resolved.push_str(lead);
             resolved.push_str(prefix);
             resolved.push_str(active.as_str());
             resolved.push_str(line);
@@ -233,10 +355,15 @@ impl<'c> Variables<'c> {
     /// name. A dynamic variable is read on its first use only.
     fn value(&mut self, name: &str) -> Option<&str> {
         if let Some(variable) = StaticVariable::from_name(name) {
-            return Some(self.cache.get(variable).unwrap_or(UNKNOWN));
+            return Some(self.of(variable));
         }
         let variable = DynamicVariable::from_name(name)?;
         Some(self.dynamic[variable as usize].get_or_insert_with(|| variable.resolve()))
+    }
+
+    /// The value of `variable` in the cache, [`UNKNOWN`] when it has none.
+    fn of(&self, variable: StaticVariable) -> &'c str {
+        self.cache.get(variable).unwrap_or(UNKNOWN)
     }
 }
 

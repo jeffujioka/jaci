@@ -265,3 +265,36 @@ fn new_variables_need_no_external_program() {
     }
     assert!(!run.stdout.contains("unknown"), "{:?}", run.stdout);
 }
+
+#[test]
+fn banner_reads_palette_every_run() {
+    let env = Env::with_config("[[banner.text.blocks]]\nlabel = \"os\"\ncontent = \"x\"\n");
+    env.add_cache(TESTHOST_CACHE);
+    for (cell, label) in [
+        (
+            "\x1b[38;2;66;122;185m▀\x1b[0m\n",
+            "\x1b[1m\x1b[38;2;66;122;185mos\x1b[0m",
+        ),
+        (
+            "\x1b[38;2;204;110;77m▀\x1b[0m\n",
+            "\x1b[1m\x1b[38;2;204;110;77mos\x1b[0m",
+        ),
+    ] {
+        fs::write(env.art_path(), cell).unwrap();
+
+        let run = in_terminal_sized(env.command(&["banner"]), 100, 40);
+
+        assert_eq!(run.status.code(), Some(0), "{}", run.stderr);
+        let first_row = run.stdout.lines().next().expect("the banner shows no rows");
+        assert!(first_row.contains(label), "{first_row:?}");
+    }
+}
+
+#[test]
+fn title_needs_its_variables_in_cache() {
+    let env = set_up("[[banner.text.blocks]]\nkind = \"title\"\n");
+
+    let run = env.banner(&["banner"]);
+
+    assert_setup_message(&run, "Almost there! Run 'jaci cache' to finish setting up.");
+}
