@@ -248,3 +248,20 @@ fn command_colour_ends_with_its_line() {
         assert_shown(&run, &beside(Path::new(HALFBLOCK), &text));
     }
 }
+
+#[test]
+fn new_variables_need_no_external_program() {
+    let env = set_up(&config_with(&[
+        "{ram_meter}|{disk_meter}|{date}|{time}|{week}",
+    ]));
+    let mut command = env.command(&["banner"]);
+    command.env("PATH", "");
+
+    let run = in_terminal_sized(command, 100, 40);
+
+    assert_eq!(run.status.code(), Some(0), "{}", run.stderr);
+    for shown in ["%", "GiB", "W"] {
+        assert!(run.stdout.contains(shown), "no {shown}: {:?}", run.stdout);
+    }
+    assert!(!run.stdout.contains("unknown"), "{:?}", run.stdout);
+}

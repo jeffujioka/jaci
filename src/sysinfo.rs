@@ -5,17 +5,31 @@
 //! banner stays fast and works with an empty `PATH`. Static values may run
 //! system tools, as they are only resolved when the cache is written.
 
-use std::fmt;
+use std::ffi::CStr;
+use std::fmt::{self, Write as _};
+use std::iter;
 
+use crate::ansi::{self, DIM, RESET};
 use crate::named::Named;
 
 /// The value of a variable that cannot be found.
 pub const UNKNOWN: &str = "unknown";
 
+/// The cells of a meter.
+const METER_CELLS: usize = 10;
+/// The gauge colour of a meter under 70%: `#94CF77`.
+const GAUGE_GREEN: [u8; 3] = [0x94, 0xCF, 0x77];
+/// The gauge colour of a meter from 70% and under 90%: `#E3CE7B`.
+const GAUGE_GOLD: [u8; 3] = [0xE3, 0xCE, 0x7B];
+/// The gauge colour of a meter from 90%: `#E06C75`.
+const GAUGE_RED: [u8; 3] = [0xE0, 0x6C, 0x75];
+
 /// A variable whose value stays put between banners, so the system info cache
 /// holds it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StaticVariable {
+    /// `{user}`: the account name of the process's user id.
+    User,
     /// `{hostname}`: the host name.
     Hostname,
     /// `{os}`: the OS name and version.
@@ -27,11 +41,12 @@ pub enum StaticVariable {
 }
 
 impl Named for StaticVariable {
-    const ALL: &'static [Self] = &[Self::Hostname, Self::Os, Self::Cpu, Self::Gpu];
+    const ALL: &'static [Self] = &[Self::User, Self::Hostname, Self::Os, Self::Cpu, Self::Gpu];
 
     /// The name a template writes between braces.
     fn name(self) -> &'static str {
         match self {
+            Self::User => "user",
             Self::Hostname => "hostname",
             Self::Os => "os",
             Self::Cpu => "cpu",
@@ -45,6 +60,7 @@ impl StaticVariable {
     /// found. It may run system tools, which can take a few seconds.
     pub fn resolve(self) -> String {
         known(match self {
+            Self::User => platform::user(),
             Self::Hostname => platform::hostname(),
             Self::Os => platform::os(),
             Self::Cpu => platform::cpu(),
@@ -63,12 +79,33 @@ pub enum DynamicVariable {
     Disk,
     /// `{uptime}`: the time since boot, as [`format_uptime`] shows it.
     Uptime,
+    /// `{ram_meter}`: the memory used of the total, as [`format_meter`]
+    /// shows it.
+    RamMeter,
+    /// `{disk_meter}`: the space used of the total on the volume `{disk}`
+    /// reads, as [`format_meter`] shows it.
+    DiskMeter,
+    /// `{date}`: the local date, as [`format_date`] shows it.
+    Date,
+    /// `{time}`: the local time, as [`format_time`] shows it.
+    Time,
+    /// `{week}`: the local ISO 8601 week, as [`format_week`] shows it.
+    Week,
 }
 
 impl Named for DynamicVariable {
     /// In the order of declaration, so a variable's position in it is
     /// `variable as usize`.
-    const ALL: &'static [Self] = &[Self::Ram, Self::Disk, Self::Uptime];
+    const ALL: &'static [Self] = &[
+        Self::Ram,
+        Self::Disk,
+        Self::Uptime,
+        Self::RamMeter,
+        Self::DiskMeter,
+        Self::Date,
+        Self::Time,
+        Self::Week,
+    ];
 
     /// The name a template writes between braces.
     fn name(self) -> &'static str {
@@ -76,6 +113,11 @@ impl Named for DynamicVariable {
             Self::Ram => "ram",
             Self::Disk => "disk",
             Self::Uptime => "uptime",
+            Self::RamMeter => "ram_meter",
+            Self::DiskMeter => "disk_meter",
+            Self::Date => "date",
+            Self::Time => "time",
+            Self::Week => "week",
         }
     }
 }
@@ -88,6 +130,11 @@ impl DynamicVariable {
             Self::Ram => platform::memory().map(|(used, total)| format_usage(used, total)),
             Self::Disk => platform::disk().map(|(used, total)| format_usage(used, total)),
             Self::Uptime => platform::uptime_seconds().map(format_uptime),
+            Self::RamMeter => platform::memory().map(|(used, total)| format_meter(used, total)),
+            Self::DiskMeter => platform::disk().map(|(used, total)| format_meter(used, total)),
+            Self::Date => platform::local_time().map(|time| format_date(&time)),
+            Self::Time => platform::local_time().map(|time| format_time(&time)),
+            Self::Week => platform::local_time().map(|time| format_week(&time)),
         })
     }
 }
@@ -123,6 +170,92 @@ pub fn format_uptime(seconds: u64) -> String {
 /// decimal.
 pub fn format_usage(used: u64, total: u64) -> String {
     format!("{} GiB / {} GiB", Gib(used), Gib(total))
+}
+
+/// `used` bytes of `total` as a meter of two lines, or [`UNKNOWN`] when
+/// `total` is 0. The percentage is round(used ÷ total × 100) and the filled
+/// cells of [`METER_CELLS`] round(percentage ÷ 10), both half away from zero;
+/// the gauge colour is [`GAUGE_GREEN`] under 70%, [`GAUGE_GOLD`] under 90% and
+/// [`GAUGE_RED`] from 90%. The first line is the filled `▰` in the gauge
+/// colour, the empty `▱` dim, a space and the percentage in the gauge colour,
+/// a run of no cells left out with its escapes; the second is
+/// `<used> / <total> GiB` dim, each with one decimal.
+pub fn format_meter(used: u64, total: u64) -> String {
+    if total == 0 {
+        return UNKNOWN.to_owned();
+    }
+    let (used_bytes, total_bytes) = (u128::from(used), u128::from(total));
+    let percent = (used_bytes * 200 + total_bytes) / (total_bytes * 2);
+    let filled =
+        usize::try_from((percent + 5) / 10).map_or(METER_CELLS, |cells| cells.min(METER_CELLS));
+    let gauge = if percent < 70 {
+        GAUGE_GREEN
+    } else if percent < 90 {
+        GAUGE_GOLD
+    } else {
+        GAUGE_RED
+    };
+    let mut meter = String::new();
+    if filled > 0 {
+        ansi::push_foreground(&mut meter, gauge);
+        meter.extend(iter::repeat_n('▰', filled));
+        meter.push_str(RESET);
+    }
+    let empty = METER_CELLS - filled;
+    if empty > 0 {
+        meter.push_str(DIM);
+        meter.extend(iter::repeat_n('▱', empty));
+        meter.push_str(RESET);
+    }
+    meter.push(' ');
+    ansi::push_foreground(&mut meter, gauge);
+    write!(
+        meter,
+        "{percent}%{RESET}\n{DIM}{} / {} GiB{RESET}",
+        Gib(used),
+        Gib(total)
+    )
+    .expect("writing to a String cannot fail");
+    meter
+}
+
+/// The local `time` as `<weekday> <day> <month> <year>`, such as
+/// `Thu 26 Nov 2026`: the day without a leading zero, the names English and
+/// three letters long.
+pub fn format_date(time: &libc::tm) -> String {
+    known(
+        strftime(time, c"%a")
+            .zip(strftime(time, c"%b %Y"))
+            .map(|(weekday, month_year)| format!("{weekday} {} {month_year}", time.tm_mday)),
+    )
+}
+
+/// The local `time` as 24-hour `HH:MM`, such as `14:32`.
+pub fn format_time(time: &libc::tm) -> String {
+    known(strftime(time, c"%H:%M"))
+}
+
+/// The ISO 8601 week of the local `time` as `W` and two digits, such as
+/// `W48`.
+pub fn format_week(time: &libc::tm) -> String {
+    known(strftime(time, c"W%V"))
+}
+
+/// `time` formatted by the C library's `strftime` as `format` says, in the C
+/// locale, as jaci never calls `setlocale`; `None` when it does not fit.
+fn strftime(time: &libc::tm, format: &CStr) -> Option<String> {
+    let mut buffer = [0_u8; 64];
+    // SAFETY: the pointer and length describe `buffer`, `format` is
+    // NUL-terminated and `time` is a valid tm.
+    let length = unsafe {
+        libc::strftime(
+            buffer.as_mut_ptr().cast(),
+            buffer.len(),
+            format.as_ptr(),
+            time,
+        )
+    };
+    (length > 0).then(|| String::from_utf8_lossy(&buffer[..length]).into_owned())
 }
 
 /// A size in bytes shown in GiB (2^30 bytes) with one decimal, rounded half
@@ -183,6 +316,7 @@ fn tool_output(program: &str, args: &[&str]) -> Option<String> {
 mod posix {
     use std::ffi::CStr;
     use std::mem::MaybeUninit;
+    use std::ptr;
 
     /// The volume whose space `{disk}` shows: on macOS `/` is the read-only
     /// system volume, and the user's files live on the data volume.
@@ -190,6 +324,41 @@ mod posix {
     const DISK_VOLUME: &CStr = c"/System/Volumes/Data";
     #[cfg(target_os = "linux")]
     const DISK_VOLUME: &CStr = c"/";
+
+    /// The account name of the process's user id, from `getpwuid_r`.
+    pub(super) fn user() -> Option<String> {
+        /// The largest buffer tried for the entry's strings.
+        const MAX_BUFFER: usize = 1 << 20;
+
+        let mut buffer = vec![0_u8; 1024];
+        loop {
+            let mut entry = MaybeUninit::<libc::passwd>::uninit();
+            let mut found = ptr::null_mut();
+            // SAFETY: getuid has no preconditions; `entry` is valid for
+            // writes of one passwd, and the pointer and length describe
+            // `buffer`, which getpwuid_r writes the entry's strings into.
+            let status = unsafe {
+                libc::getpwuid_r(
+                    libc::getuid(),
+                    entry.as_mut_ptr(),
+                    buffer.as_mut_ptr().cast(),
+                    buffer.len(),
+                    &raw mut found,
+                )
+            };
+            if status == libc::ERANGE && buffer.len() < MAX_BUFFER {
+                buffer.resize(buffer.len() * 2, 0);
+                continue;
+            }
+            if status != 0 || found.is_null() {
+                return None;
+            }
+            // SAFETY: getpwuid_r found the entry, so `found` points to
+            // `entry`, whose pw_name is a NUL-terminated string in `buffer`.
+            let name = unsafe { CStr::from_ptr((*found).pw_name) };
+            return Some(name.to_string_lossy().into_owned());
+        }
+    }
 
     /// The host name from `gethostname`.
     pub(super) fn hostname() -> Option<String> {
@@ -202,6 +371,21 @@ mod posix {
         }
         let name = CStr::from_bytes_until_nul(&buffer).ok()?;
         Some(name.to_string_lossy().into_owned())
+    }
+
+    /// The local time now, from `time` and `localtime_r`.
+    pub(super) fn local_time() -> Option<libc::tm> {
+        // SAFETY: a null pointer asks time only to return the time.
+        let now = unsafe { libc::time(ptr::null_mut()) };
+        let mut time = MaybeUninit::<libc::tm>::uninit();
+        // SAFETY: `now` is a time_t, and `time` is valid for writes of one
+        // tm.
+        let result = unsafe { libc::localtime_r(&raw const now, time.as_mut_ptr()) };
+        if result.is_null() {
+            return None;
+        }
+        // SAFETY: localtime_r succeeded, so it filled `time`.
+        Some(unsafe { time.assume_init() })
     }
 
     /// The bytes used and the total bytes of the disk volume, from `statvfs`:
@@ -238,7 +422,7 @@ mod macos {
     use std::ptr;
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    pub(super) use super::posix::{disk, hostname};
+    pub(super) use super::posix::{disk, hostname, local_time, user};
 
     /// `macOS` and the product version from sysctl `kern.osproductversion`.
     pub(super) fn os() -> Option<String> {
@@ -376,7 +560,7 @@ use linux as platform;
 mod linux {
     use std::fs;
 
-    pub(super) use super::posix::{disk, hostname};
+    pub(super) use super::posix::{disk, hostname, local_time, user};
 
     /// The fields of `/proc/cpuinfo` that name the CPU when it has no
     /// `model name` and `lscpu` names none, in the order they are tried:

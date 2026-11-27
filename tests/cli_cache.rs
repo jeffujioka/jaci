@@ -7,7 +7,7 @@ use std::fs;
 
 use common::{Env, HELP_LINE, assert_quiet_success, config_with, read_cache, stderr};
 use jaci::named::Named;
-use jaci::sysinfo::StaticVariable::{Cpu, Gpu, Hostname, Os};
+use jaci::sysinfo::StaticVariable::{self, Cpu, Gpu, Hostname, Os, User};
 
 #[test]
 fn cache_holds_only_used_variables() {
@@ -91,4 +91,21 @@ fn write_failure_names_cache() {
         "{}",
         stderr(&output)
     );
+}
+
+#[test]
+fn cache_command_writes_user() {
+    let env = Env::with_config(&config_with(&["{user}"]));
+
+    let output = env.jaci(&["cache"]);
+
+    assert_quiet_success(&output);
+    let cache = read_cache(&env.cache_path());
+    assert!(cache.get(User).is_some_and(|value| !value.is_empty()));
+    for &variable in StaticVariable::ALL
+        .iter()
+        .filter(|&&variable| variable != User)
+    {
+        assert_eq!(cache.get(variable), None, "{}", variable.name());
+    }
 }
