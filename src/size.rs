@@ -95,8 +95,8 @@ impl Error for TooLarge {}
 
 /// Fits `image` to art in `mode`. The columns come from the first of
 /// `--full`, `--auto`, `-w`, `-s`, `[encode].width`, then 80; the rows are
-/// round(columns × height ÷ width × ratio), at least 1, with the ratio from
-/// `--ratio`, else `[encode].ratio`, else 0.5. An image that already has the
+/// [`art_rows`] for them, with the ratio from `--ratio`, else
+/// `[encode].ratio`, else 0.5. An image that already has the
 /// art's pixel grid is used as it is; any other is resampled to it, and in
 /// quadrant mode a resampled image whose every pixel is opaque is then
 /// sharpened with an unsharp mask. An image with any transparency is not
@@ -126,7 +126,7 @@ pub fn fit<'a>(image: &'a RgbaImage, mode: Mode, sizing: &Sizing) -> Result<Fit<
         .ratio
         .or(sizing.config_ratio)
         .unwrap_or(DEFAULT_RATIO);
-    let rows = rounded(f64::from(columns) * f64::from(height) / f64::from(width) * ratio);
+    let rows = art_rows(columns, (width, height), ratio);
 
     let target = columns
         .checked_mul(cell_width)
@@ -152,6 +152,13 @@ pub fn fit<'a>(image: &'a RgbaImage, mode: Mode, sizing: &Sizing) -> Result<Fit<
         rows,
         image,
     })
+}
+
+/// The rows art `columns` wide takes of an image `width` × `height` pixels,
+/// with characters `ratio` as wide as they are high: round(columns × height
+/// ÷ width × ratio), at least 1.
+pub(crate) fn art_rows(columns: u32, (width, height): (u32, u32), ratio: f64) -> u32 {
+    rounded(f64::from(columns) * f64::from(height) / f64::from(width) * ratio)
 }
 
 /// Whether every pixel of `image` has alpha 255.
